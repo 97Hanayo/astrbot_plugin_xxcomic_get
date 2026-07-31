@@ -67,6 +67,14 @@ class GalleryDownload:
 
 
 @dataclass(slots=True)
+class JmComicDownload:
+    comic_id: str
+    pdf_path: Path
+    pdf_password: str
+    metadata_path: Path
+
+
+@dataclass(slots=True)
 class NhentaiCandidate:
     gallery_id: str
     title: str
@@ -220,6 +228,17 @@ def _parse_nhentai_gallery_id(urls: list[str]) -> str | None:
     return None
 
 
+def _normalize_jmcomic_id(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not re.fullmatch(r"jm\d+", text):
+        raise ValueError("禁漫 id 必须是 jm+数字，例如 jm112233")
+    return text
+
+
+def _jmcomic_numeric_id(comic_id: str) -> str:
+    return comic_id[2:]
+
+
 def _extract_nhentai_title(payload: dict[str, Any], fallback: str) -> str:
     title_info = payload.get("title")
     if isinstance(title_info, dict):
@@ -288,6 +307,41 @@ def _cookie_header_from_setting(value: Any) -> str:
         if "nhentai.net" in domain:
             pairs.append(f"{name}={cookie_value}")
     return "; ".join(pairs)
+
+
+def _cookie_dict_from_setting(value: Any, domain_keyword: str | None = None) -> dict[str, str]:
+    text = _read_cookie_setting(value)
+    if not text:
+        return {}
+
+    pairs: dict[str, str] = {}
+    if "\t" not in text and "=" in text:
+        for segment in re.split(r"[;\n]", text):
+            segment = segment.strip()
+            if not segment or "=" not in segment:
+                continue
+            name, cookie_value = segment.split("=", 1)
+            name = name.strip()
+            if name:
+                pairs[name] = cookie_value.strip()
+        return pairs
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
+            continue
+        normalized = raw_line.replace("#HttpOnly_", "", 1)
+        parts = normalized.split("\t")
+        if len(parts) < 7:
+            continue
+        domain, _, _, _, _, name, cookie_value = parts[:7]
+        if domain_keyword and domain_keyword not in domain:
+            continue
+        if name:
+            pairs[name] = cookie_value
+    return pairs
 
 
 def _add_nhentai_auth_header(headers: dict[str, str], api_key: Any) -> None:
@@ -395,6 +449,36 @@ def _encrypt_pdf_pages(page_paths: list[Path], output_path: Path, password: str)
         writer.write(output)
 
 
+def _ensure_pdf_encrypted(pdf_path: Path, password: str) -> None:
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception as exc:
+        raise RuntimeError("当前环境缺少 pypdf，无法确认或补充 PDF 加密") from exc
+
+    reader = PdfReader(str(pdf_path))
+    if reader.is_encrypted:
+        if reader.decrypt(password) == 0:
+            raise RuntimeError("PDF 已加密，但不能用记录的密码打开")
+        return
+
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    try:
+        writer.encrypt(
+            user_password=password,
+            owner_password=password,
+            algorithm="AES-256",
+        )
+    except TypeError:
+        writer.encrypt(user_password=password, owner_password=password)
+
+    temp_path = pdf_path.with_suffix(".encrypted.tmp.pdf")
+    with temp_path.open("wb") as output:
+        writer.write(output)
+    temp_path.replace(pdf_path)
+
+
 def _create_encrypted_pdf_from_images(
     image_paths: list[Path],
     output_path: Path,
@@ -475,6 +559,22 @@ def _load_cached_gallery_download(gallery_id: str) -> GalleryDownload | None:
     )
 
 
+def _load_cached_jmcomic_download(comic_id: str) -> JmComicDownload | None:
+    download_dir = _get_download_dir(comic_id)
+    pdf_path = download_dir / f"{comic_id}.pdf"
+    metadata_path = download_dir / "metadata.json"
+    cached_metadata = _read_gallery_metadata(metadata_path)
+    cached_pdf_password = str(cached_metadata.get("pdf_password") or "").strip()
+    if not pdf_path.exists() or pdf_path.stat().st_size <= 0 or not cached_pdf_password:
+        return None
+    return JmComicDownload(
+        comic_id=comic_id,
+        pdf_path=pdf_path,
+        pdf_password=cached_pdf_password,
+        metadata_path=metadata_path,
+    )
+
+
 def _load_json_url(
     url: str,
     headers: dict[str, str],
@@ -511,7 +611,7 @@ def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.5")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic", "1.1.0")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -565,6 +665,14 @@ class XxComicGetPlugin(Star):
             _get_config_value(self.config, "nhentai.block_risky_tags", True),
             True,
         )
+        self.jmcomic_download_enabled = _coerce_bool(
+            _get_config_value(self.config, "jmcomic.download_enabled", True),
+            True,
+        )
+        self.jmcomic_domain = str(
+            _get_config_value(self.config, "jmcomic.domain", "18comic.vip") or ""
+        ).strip()
+        self.jmcomic_cookies = _get_config_value(self.config, "jmcomic.cookies", "")
         self.cache_cleanup_enabled = _coerce_bool(
             _get_config_value(self.config, "cache.cleanup_enabled", True),
             True,
@@ -737,6 +845,42 @@ class XxComicGetPlugin(Star):
             return
         yield self._build_pdf_result(event, download)
 
+    @filter.command("JJ")
+    async def download_jmcomic(self, event: AstrMessageEvent):
+        """按给定禁漫 ID 下载整本并生成加密 PDF"""
+        self._start_cache_cleanup_task()
+        raw_id = _extract_command_text(getattr(event, "message_str", ""), "JJ")
+        if not raw_id:
+            yield event.plain_result("请发送：/JJ jm112233")
+            return
+        try:
+            comic_id = _normalize_jmcomic_id(raw_id)
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+
+        cached_download = await asyncio.to_thread(
+            self._load_cached_jmcomic_download_locked,
+            comic_id,
+        )
+        if cached_download is not None:
+            logger.info("复用 jmcomic 缓存：%s", comic_id)
+            yield self._build_jmcomic_pdf_result(event, cached_download)
+            return
+        if not self.jmcomic_download_enabled:
+            yield event.plain_result("当前配置已关闭禁漫下载。")
+            return
+
+        yield event.plain_result("开始下载禁漫本子并生成加密 PDF，可能需要一点时间。")
+
+        try:
+            download = await self._download_jmcomic_album(comic_id)
+        except Exception as exc:
+            logger.exception("jmcomic 下载失败")
+            yield event.plain_result(f"下载失败：{exc}")
+            return
+        yield self._build_jmcomic_pdf_result(event, download)
+
     async def _search_soutubot(self, image_path: Path) -> list[SearchResult]:
         if not image_path.exists():
             raise FileNotFoundError(f"图片文件不存在: {image_path}")
@@ -862,6 +1006,9 @@ class XxComicGetPlugin(Star):
     async def _download_nhentai_gallery(self, gallery_id: str) -> GalleryDownload:
         return await asyncio.to_thread(self._download_nhentai_gallery_sync_locked, gallery_id)
 
+    async def _download_jmcomic_album(self, comic_id: str) -> JmComicDownload:
+        return await asyncio.to_thread(self._download_jmcomic_album_sync_locked, comic_id)
+
     async def _search_nhentai_first_gallery(self, query: str) -> NhentaiCandidate:
         return await asyncio.to_thread(self._search_nhentai_first_gallery_sync, query)
 
@@ -911,6 +1058,115 @@ class XxComicGetPlugin(Star):
     def _load_cached_gallery_download_locked(self, gallery_id: str) -> GalleryDownload | None:
         with self._cache_lock:
             return _load_cached_gallery_download(gallery_id)
+
+    def _download_jmcomic_album_sync_locked(self, comic_id: str) -> JmComicDownload:
+        with self._cache_lock:
+            return self._download_jmcomic_album_sync(comic_id)
+
+    def _load_cached_jmcomic_download_locked(self, comic_id: str) -> JmComicDownload | None:
+        with self._cache_lock:
+            return _load_cached_jmcomic_download(comic_id)
+
+    def _download_jmcomic_album_sync(self, comic_id: str) -> JmComicDownload:
+        cached_download = _load_cached_jmcomic_download(comic_id)
+        if cached_download is not None:
+            logger.info("复用 jmcomic 缓存：%s", comic_id)
+            return cached_download
+
+        try:
+            from jmcomic import Feature, create_option_by_file, download_album
+        except Exception as exc:
+            raise RuntimeError("当前环境缺少 jmcomic，请安装插件依赖后重试") from exc
+
+        numeric_id = _jmcomic_numeric_id(comic_id)
+        download_dir = _get_download_dir(comic_id)
+        jm_work_dir = download_dir / "jmcomic"
+        pdf_output_dir = download_dir / "pdf"
+        metadata_path = download_dir / "metadata.json"
+        pdf_path = download_dir / f"{comic_id}.pdf"
+        _clear_directory_contents(jm_work_dir)
+        _clear_directory_contents(pdf_output_dir)
+        jm_work_dir.mkdir(parents=True, exist_ok=True)
+        pdf_output_dir.mkdir(parents=True, exist_ok=True)
+
+        option_path = download_dir / "jmcomic_option.yml"
+        option_lines = [
+            "dir_rule:",
+            f"  base_dir: {jm_work_dir.as_posix()}",
+            "  rule: Bd / {Aid}",
+            "download:",
+            "  image:",
+            "    decode: true",
+        ]
+        if self.jmcomic_domain:
+            option_lines.extend(
+                [
+                    "client:",
+                    "  domain:",
+                    f"    - {self.jmcomic_domain}",
+                ]
+            )
+        option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
+
+        pdf_password = _generate_pdf_password()
+        option = create_option_by_file(str(option_path))
+        cookies = _cookie_dict_from_setting(self.jmcomic_cookies, "18comic")
+        if cookies:
+            option.update_cookies(cookies)
+
+        download_album(
+            numeric_id,
+            option,
+            extra=Feature.export_pdf(
+                pdf_dir=str(pdf_output_dir),
+                filename_rule="Aid",
+                encrypt={"password": pdf_password},
+                delete_original_file=True,
+            ),
+        )
+
+        generated_pdfs = sorted(
+            (path for path in pdf_output_dir.glob("*.pdf") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not generated_pdfs:
+            generated_pdfs = sorted(
+                (path for path in download_dir.rglob("*.pdf") if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        if not generated_pdfs:
+            raise RuntimeError("jmcomic 下载完成后没有找到导出的 PDF")
+
+        generated_pdf = generated_pdfs[0]
+        if pdf_path.exists():
+            pdf_path.unlink()
+        shutil.move(str(generated_pdf), str(pdf_path))
+        if not pdf_path.exists() or pdf_path.stat().st_size <= 0:
+            raise RuntimeError("jmcomic PDF 重命名后文件不可用")
+        _ensure_pdf_encrypted(pdf_path, pdf_password)
+
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "id": comic_id,
+                    "jm_album_id": numeric_id,
+                    "pdf": pdf_path.name,
+                    "pdf_password": pdf_password,
+                    "source_pdf": generated_pdf.name,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return JmComicDownload(
+            comic_id=comic_id,
+            pdf_path=pdf_path,
+            pdf_password=pdf_password,
+            metadata_path=metadata_path,
+        )
 
     def _download_nhentai_gallery_sync(self, gallery_id: str) -> GalleryDownload:
         cached_download = _load_cached_gallery_download(gallery_id)
@@ -1087,6 +1343,17 @@ class XxComicGetPlugin(Star):
                     f"密码: {download.pdf_password}"
                 ),
                 File(name=f"{download.gallery_id}.pdf", file=str(download.pdf_path)),
+            ]
+        )
+
+    def _build_jmcomic_pdf_result(self, event: AstrMessageEvent, download: JmComicDownload):
+        return event.chain_result(
+            [
+                Plain(
+                    f"ID: {download.comic_id}\n"
+                    f"密码: {download.pdf_password}"
+                ),
+                File(name=f"{download.comic_id}.pdf", file=str(download.pdf_path)),
             ]
         )
 

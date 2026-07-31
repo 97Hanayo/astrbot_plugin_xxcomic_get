@@ -84,6 +84,29 @@
       }
     }
   },
+  "jmcomic": {
+    "description": "禁漫天堂下载设置",
+    "type": "object",
+    "items": {
+      "download_enabled": {
+        "description": "允许 /JJ 下载禁漫本子",
+        "type": "bool",
+        "default": true
+      },
+      "domain": {
+        "description": "禁漫域名",
+        "type": "string",
+        "hint": "jmcomic 使用的禁漫域名，例如 18comic.vip。留空时使用 jmcomic 默认域名。",
+        "default": "18comic.vip"
+      },
+      "cookies": {
+        "description": "禁漫 Cookies",
+        "type": "string",
+        "hint": "可填 Netscape cookies.txt 内容、cookies.txt 文件路径，或 k=v; k2=v2 形式。不要在公开日志中输出。",
+        "default": ""
+      }
+    }
+  },
   "cache": {
     "description": "缓存清理设置",
     "type": "object",

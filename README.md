@@ -76,3 +76,21 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 - 只处理同一条消息中的第一张图片
 - 搜索服务：SoutuBot
 - 下载来源：nhentai API v2
+
+## 禁漫天堂直接下载
+
+发送：
+
+```text
+/JJ jm112233
+```
+
+插件会调用 `jmcomic` 下载整本，并使用内置 PDF 导出能力生成加密 PDF。最终发送的文件名固定为输入 id，例如 `jm112233.pdf`；密码会随消息一起返回。id 仅接受 `jm+数字` 的形式。
+
+相关配置：
+
+| 配置项 | 说明 | 默认值 |
+| --- | --- | --- |
+| `jmcomic.download_enabled` | 是否允许 `/JJ` 下载禁漫本子 | `true` |
+| `jmcomic.domain` | jmcomic 使用的禁漫域名 | `18comic.vip` |
+| `jmcomic.cookies` | 禁漫 Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
