@@ -44,6 +44,7 @@ DEFAULT_JMCOMIC_DOMAINS = [
     "18comic-c.art",
     "18comic-palworld.club",
 ]
+JMCOMIC_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 BLOCKED_NHENTAI_TAGS = {
     "lolicon",
     "shotacon",
@@ -256,6 +257,24 @@ def _split_config_list(value: Any) -> list[str]:
     else:
         raw_items = re.split(r"[,;\s]+", str(value or ""))
     return [item.strip().strip("/") for item in raw_items if item.strip().strip("/")]
+
+
+def _natural_sort_key(path: Path) -> list[Any]:
+    text = path.as_posix().lower()
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
+
+
+def _collect_image_files(base_dir: Path) -> list[Path]:
+    if not base_dir.exists():
+        return []
+    return sorted(
+        (
+            path
+            for path in base_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in JMCOMIC_IMAGE_SUFFIXES
+        ),
+        key=_natural_sort_key,
+    )
 
 
 def _extract_nhentai_title(payload: dict[str, Any], fallback: str) -> str:
@@ -630,7 +649,7 @@ def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic", "1.1.1")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic", "1.1.2")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1159,7 +1178,7 @@ class XxComicGetPlugin(Star):
                     pdf_dir=str(pdf_output_dir),
                     filename_rule="Aid",
                     encrypt={"password": pdf_password},
-                    delete_original_file=True,
+                    delete_original_file=False,
                 ),
                 check_exception=True,
             )
@@ -1173,6 +1192,7 @@ class XxComicGetPlugin(Star):
                 ) from exc
             raise
 
+        pdf_created_by = "jmcomic_export"
         generated_pdfs = sorted(
             (path for path in pdf_output_dir.glob("*.pdf") if path.is_file()),
             key=lambda path: path.stat().st_mtime,
@@ -1185,12 +1205,18 @@ class XxComicGetPlugin(Star):
                 reverse=True,
             )
         if not generated_pdfs:
-            raise RuntimeError("jmcomic 下载完成后没有找到导出的 PDF")
-
-        generated_pdf = generated_pdfs[0]
-        if pdf_path.exists():
-            pdf_path.unlink()
-        shutil.move(str(generated_pdf), str(pdf_path))
+            image_paths = _collect_image_files(jm_work_dir)
+            if not image_paths:
+                raise RuntimeError("jmcomic 下载完成后没有找到导出的 PDF，也没有找到可用于合成 PDF 的图片")
+            _create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
+            generated_pdf_name = pdf_path.name
+            pdf_created_by = "plugin_fallback"
+        else:
+            generated_pdf = generated_pdfs[0]
+            generated_pdf_name = generated_pdf.name
+            if pdf_path.exists():
+                pdf_path.unlink()
+            shutil.move(str(generated_pdf), str(pdf_path))
         if not pdf_path.exists() or pdf_path.stat().st_size <= 0:
             raise RuntimeError("jmcomic PDF 重命名后文件不可用")
         _ensure_pdf_encrypted(pdf_path, pdf_password)
@@ -1202,7 +1228,8 @@ class XxComicGetPlugin(Star):
                     "jm_album_id": numeric_id,
                     "pdf": pdf_path.name,
                     "pdf_password": pdf_password,
-                    "source_pdf": generated_pdf.name,
+                    "source_pdf": generated_pdf_name,
+                    "pdf_created_by": pdf_created_by,
                 },
                 ensure_ascii=False,
                 indent=2,
