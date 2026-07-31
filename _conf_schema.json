@@ -96,8 +96,20 @@
       "domain": {
         "description": "禁漫域名",
         "type": "string",
-        "hint": "jmcomic 使用的禁漫域名，例如 18comic.vip。留空时使用 jmcomic 默认域名。",
-        "default": "18comic.vip"
+        "hint": "兼容旧配置。可填单个域名，也可用逗号分隔多个域名；建议改用 jmcomic.domains。",
+        "default": ""
+      },
+      "domains": {
+        "description": "禁漫域名列表",
+        "type": "string",
+        "hint": "可用逗号或空格分隔多个域名。插件会按顺序交给 jmcomic 轮询，避免单个域名 /setting 失败就中断。",
+        "default": "18comic.vip,18comic.org,jmcomic1.me,jmcomic.me,18comic-palworld.vip,18comic-c.art,18comic-palworld.club"
+      },
+      "proxy": {
+        "description": "禁漫代理",
+        "type": "string",
+        "hint": "可选。当前运行环境无法直连禁漫域名时填写 HTTP/HTTPS 代理，例如 http://127.0.0.1:7890。",
+        "default": ""
       },
       "cookies": {
         "description": "禁漫 Cookies",

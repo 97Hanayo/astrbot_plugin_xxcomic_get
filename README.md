@@ -92,5 +92,9 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
 | `jmcomic.download_enabled` | 是否允许 `/JJ` 下载禁漫本子 | `true` |
-| `jmcomic.domain` | jmcomic 使用的禁漫域名 | `18comic.vip` |
+| `jmcomic.domains` | jmcomic 使用的禁漫域名列表，逗号或空格分隔，会按顺序重试 | `18comic.vip,18comic.org,jmcomic1.me,jmcomic.me,18comic-palworld.vip,18comic-c.art,18comic-palworld.club` |
+| `jmcomic.domain` | 兼容旧配置；单个域名或逗号分隔的多个域名 | 空 |
+| `jmcomic.proxy` | 禁漫下载代理，例如 `http://127.0.0.1:7890` | 空 |
 | `jmcomic.cookies` | 禁漫 Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
+
+如果提示 `/setting` 或“请求重试全部失败”，通常是当前环境访问配置的禁漫域名失败。优先换 `jmcomic.domains`，或给 AstrBot 运行环境配置可访问的 `jmcomic.proxy`。

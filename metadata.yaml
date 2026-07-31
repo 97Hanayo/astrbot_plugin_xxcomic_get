@@ -1,6 +1,6 @@
 name: astrbot_plugin_xxcomic_get
 display_name: 本子图片识别
 desc: 通过 /哈哈 + 图片识别来源，或 /嘻嘻 + 文本搜索 nhentai，确认后下载原图生成加密 PDF；支持 /JJ 下载禁漫天堂 PDF
-version: v1.1.0
+version: v1.1.1
 author: hanayo
 repo: ""

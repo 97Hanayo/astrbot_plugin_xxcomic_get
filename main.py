@@ -35,6 +35,15 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126 Safari/537.36"
 )
+DEFAULT_JMCOMIC_DOMAINS = [
+    "18comic.vip",
+    "18comic.org",
+    "jmcomic1.me",
+    "jmcomic.me",
+    "18comic-palworld.vip",
+    "18comic-c.art",
+    "18comic-palworld.club",
+]
 BLOCKED_NHENTAI_TAGS = {
     "lolicon",
     "shotacon",
@@ -237,6 +246,16 @@ def _normalize_jmcomic_id(value: str) -> str:
 
 def _jmcomic_numeric_id(comic_id: str) -> str:
     return comic_id[2:]
+
+
+def _split_config_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        raw_items = [str(item or "") for item in value]
+    else:
+        raw_items = re.split(r"[,;\s]+", str(value or ""))
+    return [item.strip().strip("/") for item in raw_items if item.strip().strip("/")]
 
 
 def _extract_nhentai_title(payload: dict[str, Any], fallback: str) -> str:
@@ -611,7 +630,7 @@ def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic", "1.1.0")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic", "1.1.1")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -669,9 +688,15 @@ class XxComicGetPlugin(Star):
             _get_config_value(self.config, "jmcomic.download_enabled", True),
             True,
         )
-        self.jmcomic_domain = str(
-            _get_config_value(self.config, "jmcomic.domain", "18comic.vip") or ""
-        ).strip()
+        configured_domains = _split_config_list(
+            _get_config_value(
+                self.config,
+                "jmcomic.domains",
+                _get_config_value(self.config, "jmcomic.domain", ""),
+            )
+        )
+        self.jmcomic_domains = configured_domains or list(DEFAULT_JMCOMIC_DOMAINS)
+        self.jmcomic_proxy = str(_get_config_value(self.config, "jmcomic.proxy", "") or "").strip()
         self.jmcomic_cookies = _get_config_value(self.config, "jmcomic.cookies", "")
         self.cache_cleanup_enabled = _coerce_bool(
             _get_config_value(self.config, "cache.cleanup_enabled", True),
@@ -1094,36 +1119,59 @@ class XxComicGetPlugin(Star):
             "dir_rule:",
             f"  base_dir: {jm_work_dir.as_posix()}",
             "  rule: Bd / {Aid}",
-            "download:",
-            "  image:",
-            "    decode: true",
+            "client:",
+            "  impl: html",
+            "  domain:",
+            "    html:",
+            *[f"      - {domain}" for domain in self.jmcomic_domains],
         ]
-        if self.jmcomic_domain:
+        if self.jmcomic_proxy:
             option_lines.extend(
                 [
-                    "client:",
-                    "  domain:",
-                    f"    - {self.jmcomic_domain}",
+                    "  postman:",
+                    "    meta_data:",
+                    f"      proxies: {self.jmcomic_proxy}",
                 ]
             )
+        option_lines.extend(
+            [
+                "download:",
+                "  image:",
+                "    decode: true",
+                "  threading:",
+                "    image: 10",
+                "    photo: 4",
+            ]
+        )
         option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
 
         pdf_password = _generate_pdf_password()
         option = create_option_by_file(str(option_path))
-        cookies = _cookie_dict_from_setting(self.jmcomic_cookies, "18comic")
+        cookies = _cookie_dict_from_setting(self.jmcomic_cookies)
         if cookies:
             option.update_cookies(cookies)
 
-        download_album(
-            numeric_id,
-            option,
-            extra=Feature.export_pdf(
-                pdf_dir=str(pdf_output_dir),
-                filename_rule="Aid",
-                encrypt={"password": pdf_password},
-                delete_original_file=True,
-            ),
-        )
+        try:
+            download_album(
+                numeric_id,
+                option,
+                extra=Feature.export_pdf(
+                    pdf_dir=str(pdf_output_dir),
+                    filename_rule="Aid",
+                    encrypt={"password": pdf_password},
+                    delete_original_file=True,
+                ),
+                check_exception=True,
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            if "/setting" in error_text or "请求重试全部失败" in error_text:
+                domains = ", ".join(self.jmcomic_domains)
+                proxy_hint = "；如果运行环境需要代理，请配置 jmcomic.proxy，例如 http://127.0.0.1:7890"
+                raise RuntimeError(
+                    f"禁漫域名初始化失败，已尝试这些域名：{domains}{proxy_hint}"
+                ) from exc
+            raise
 
         generated_pdfs = sorted(
             (path for path in pdf_output_dir.glob("*.pdf") if path.is_file()),
