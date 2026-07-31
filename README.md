@@ -30,6 +30,7 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 | `soutubot.headless` | 是否使用无头浏览器 | `true` |
 | `nhentai.download_enabled` | 是否自动下载最高匹配的 nhentai 结果 | `true` |
 | `nhentai.cookies` | nhentai Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
+| `nhentai.api_key` | nhentai API Key，会作为 `Authorization: Key <api_key>` 请求头发送；为空时相关命令返回 `未配置api` | 空 |
 | `nhentai.max_download_pages` | 最大下载页数 | `120` |
 | `nhentai.send_forward` | 是否优先合并聊天记录发送 | `true` |
 | `nhentai.block_risky_tags` | 是否阻止风险标签自动下载 | `true` |
@@ -54,11 +55,11 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 ## 下载与发送
 
 - `/哈哈` 自动下载只处理最高匹配的 `nhentai` 结果，其他来源只返回搜索结果。
-- `/嘻嘻` 会调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，直接使用第一个搜索结果。
+- `/嘻嘻` 会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，直接使用第一个搜索结果。
 - 下载文件保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
-- API 返回的 `pages[].path` 会直接用于拼接 `https://i1.nhentai.net/{path}`，不通过连续探测猜页数。
+- 原图地址通过 `https://nhentai.net/api/v2/cdn` 返回的 `image_servers` 拼接 API 返回的 `pages[].path`，不硬编码 CDN 子域名，也不通过连续探测猜页数。
 - 合并聊天记录主要适配 OneBot v11；平台不支持时会回退为逐张图片。
-- Cookie 值只用于请求，不会主动输出到日志或回复。
+- Cookie 和 API Key 只用于请求，不会主动输出到日志或回复。
 
 ## 说明
 

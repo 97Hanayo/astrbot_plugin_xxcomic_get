@@ -22,7 +22,7 @@ PLUGIN_NAME = "astrbot_plugin_xxcomic_get"
 SOUTUBOT_HOME_URL = "https://soutubot.moe/"
 NHENTAI_API_URL = "https://nhentai.net/api/v2/galleries/{gallery_id}"
 NHENTAI_SEARCH_URL = "https://nhentai.net/api/v2/search"
-NHENTAI_IMAGE_URL = "https://i1.nhentai.net/{path}"
+NHENTAI_CDN_URL = "https://nhentai.net/api/v2/cdn"
 DEFAULT_TIMEOUT_MS = 60000
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -206,6 +206,16 @@ def _cookie_header_from_setting(value: Any) -> str:
     return "; ".join(pairs)
 
 
+def _add_nhentai_auth_header(headers: dict[str, str], api_key: Any) -> None:
+    key = str(api_key or "").strip()
+    if key:
+        headers["Authorization"] = f"Key {key}"
+
+
+def _join_url(base_url: str, path: str) -> str:
+    return urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+
+
 def _request_bytes(url: str, headers: dict[str, str], timeout: float) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -235,7 +245,7 @@ def _format_result(result: SearchResult, order: int) -> str:
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.0")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.1")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -268,6 +278,7 @@ class XxComicGetPlugin(Star):
             True,
         )
         self.nhentai_cookies = _get_config_value(self.config, "nhentai.cookies", "")
+        self.nhentai_api_key = _get_config_value(self.config, "nhentai.api_key", "")
         self.max_download_pages = _coerce_int(
             _get_config_value(self.config, "nhentai.max_download_pages", 120),
             default=120,
@@ -288,6 +299,15 @@ class XxComicGetPlugin(Star):
             _get_config_value(self.config, "nhentai.send_forward", True),
             True,
         )
+
+    def _has_nhentai_api_key(self) -> bool:
+        return bool(str(self.nhentai_api_key or "").strip())
+
+    def _require_nhentai_api_key(self) -> str:
+        api_key = str(self.nhentai_api_key or "").strip()
+        if not api_key:
+            raise RuntimeError("未配置api")
+        return api_key
 
     @filter.command("哈哈")
     async def search_comic(self, event: AstrMessageEvent):
@@ -328,6 +348,9 @@ class XxComicGetPlugin(Star):
             )
             yield event.plain_result(f"找到了这些可能来源：\n\n{body}")
             return
+        if not self._has_nhentai_api_key():
+            yield event.plain_result("未配置api")
+            return
 
         try:
             download = await self._download_nhentai_gallery(gallery_id)
@@ -360,6 +383,9 @@ class XxComicGetPlugin(Star):
             return
         if not self.download_enabled:
             yield event.plain_result("当前配置已关闭 nhentai 自动下载。")
+            return
+        if not self._has_nhentai_api_key():
+            yield event.plain_result("未配置api")
             return
 
         try:
@@ -517,6 +543,7 @@ class XxComicGetPlugin(Star):
         search_query = query.strip()
         if not search_query:
             raise RuntimeError("搜索文本为空")
+        api_key = self._require_nhentai_api_key()
 
         url = (
             f"{NHENTAI_SEARCH_URL}?"
@@ -530,6 +557,7 @@ class XxComicGetPlugin(Star):
         }
         if cookie_header:
             headers["Cookie"] = cookie_header
+        _add_nhentai_auth_header(headers, api_key)
 
         payload = _load_json_url(url, headers, timeout=max(10.0, self.timeout_ms / 1000))
         raw_results = payload.get("result") or payload.get("results") or payload.get("data")
@@ -545,6 +573,7 @@ class XxComicGetPlugin(Star):
         return gallery_id
 
     def _download_nhentai_gallery_sync(self, gallery_id: str) -> GalleryDownload:
+        api_key = self._require_nhentai_api_key()
         gallery_dir = _get_download_dir(gallery_id)
         images_dir = gallery_dir / "originals"
         if images_dir.exists():
@@ -559,12 +588,25 @@ class XxComicGetPlugin(Star):
         }
         if cookie_header:
             headers["Cookie"] = cookie_header
+        _add_nhentai_auth_header(headers, api_key)
 
         metadata = _load_json_url(
             NHENTAI_API_URL.format(gallery_id=gallery_id),
             headers,
             timeout=max(10.0, self.timeout_ms / 1000),
         )
+        cdn_config = _load_json_url(
+            NHENTAI_CDN_URL,
+            headers,
+            timeout=max(10.0, self.timeout_ms / 1000),
+        )
+        image_servers = cdn_config.get("image_servers")
+        if not isinstance(image_servers, list) or not image_servers:
+            raise RuntimeError("nhentai API 没有返回可用图片 CDN")
+        image_base_url = str(image_servers[0] or "").strip()
+        if not image_base_url:
+            raise RuntimeError("nhentai API 返回的图片 CDN 为空")
+
         pages = metadata.get("pages")
         if not isinstance(pages, list) or not pages:
             raise RuntimeError("nhentai API 没有返回可下载页列表")
@@ -610,7 +652,7 @@ class XxComicGetPlugin(Star):
                 continue
             suffix = Path(urllib.parse.urlparse(page_path).path).suffix or ".webp"
             file_path = images_dir / f"{index:04d}{suffix}"
-            image_url = NHENTAI_IMAGE_URL.format(path=page_path)
+            image_url = _join_url(image_base_url, page_path)
             last_error: str | None = None
             for attempt in range(self.download_retries + 1):
                 try:

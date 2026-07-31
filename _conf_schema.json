@@ -50,6 +50,12 @@
         "hint": "可填写 Netscape cookies.txt 内容、cookies.txt 文件路径，或 k=v; k2=v2 形式。不要在公开日志中输出。",
         "default": ""
       },
+      "api_key": {
+        "description": "nhentai API Key",
+        "type": "string",
+        "hint": "必填。请求 nhentai API v2 时会作为 Authorization: Key <api_key> 发送；为空时相关命令返回“未配置api”。请勿公开输出。",
+        "default": ""
+      },
       "max_download_pages": {
         "description": "最大下载页数",
         "type": "int",
