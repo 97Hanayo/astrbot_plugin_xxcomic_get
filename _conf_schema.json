@@ -14,7 +14,7 @@
       "max_results": {
         "description": "最多解析结果数",
         "type": "int",
-        "hint": "建议 1-5 条。自动下载只会使用最高匹配结果。",
+        "hint": "建议 1-5 条。若结果中包含 nhentai，会先返回第一个 nhentai 结果供确认。",
         "default": 3,
         "min": 1,
         "max": 10
@@ -40,7 +40,7 @@
     "type": "object",
     "items": {
       "download_enabled": {
-        "description": "自动下载最高匹配结果",
+        "description": "允许确认后下载结果",
         "type": "bool",
         "default": true
       },
@@ -81,6 +81,26 @@
         "type": "bool",
         "hint": "命中 lolicon、shotacon 等风险标签时停止自动下载。",
         "default": true
+      }
+    }
+  },
+  "cache": {
+    "description": "缓存清理设置",
+    "type": "object",
+    "items": {
+      "cleanup_enabled": {
+        "description": "自动清理缓存",
+        "type": "bool",
+        "hint": "开启后会定期清空插件数据目录下的 downloads 和 cookies 缓存。",
+        "default": true
+      },
+      "cleanup_hour": {
+        "description": "每天清理时间",
+        "type": "int",
+        "hint": "使用服务器本地时间，默认每天 02:00 清理一次所有缓存。",
+        "default": 2,
+        "min": 0,
+        "max": 23
       }
     }
   }

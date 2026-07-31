@@ -7,11 +7,13 @@ import secrets
 import shutil
 import ssl
 import string
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,8 @@ NHENTAI_API_URL = "https://nhentai.net/api/v2/galleries/{gallery_id}"
 NHENTAI_SEARCH_URL = "https://nhentai.net/api/v2/search"
 NHENTAI_CDN_URL = "https://nhentai.net/api/v2/cdn"
 DEFAULT_TIMEOUT_MS = 60000
+CACHE_CLEANUP_STATE_FILE = "cache_cleanup_state.json"
+DEFAULT_CACHE_CLEANUP_HOUR = 2
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126 Safari/537.36"
@@ -62,6 +66,12 @@ class GalleryDownload:
     metadata_path: Path
 
 
+@dataclass(slots=True)
+class NhentaiCandidate:
+    gallery_id: str
+    title: str
+
+
 class EmptySearchResultError(RuntimeError):
     pass
 
@@ -85,6 +95,61 @@ def _get_download_dir(gallery_id: str) -> Path:
     download_dir = _get_data_dir() / "downloads" / gallery_id
     download_dir.mkdir(parents=True, exist_ok=True)
     return download_dir
+
+
+def _get_cache_cleanup_state_file() -> Path:
+    return _get_data_dir() / CACHE_CLEANUP_STATE_FILE
+
+
+def _read_cache_cleanup_state() -> dict[str, Any]:
+    state_file = _get_cache_cleanup_state_file()
+    if not state_file.exists():
+        return {}
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_cache_cleanup_state(timestamp: float, cleanup_date: str) -> None:
+    state_file = _get_cache_cleanup_state_file()
+    state_file.write_text(
+        json.dumps(
+            {
+                "last_cleanup_at": timestamp,
+                "last_cleanup_date": cleanup_date,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _cleanup_date_from_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+
+
+def _seconds_until_next_cache_cleanup(cleanup_hour: int, now: float | None = None) -> float:
+    current = datetime.fromtimestamp(now or time.time())
+    target = current.replace(hour=cleanup_hour, minute=0, second=0, microsecond=0)
+    if current >= target:
+        target += timedelta(days=1)
+    return max(60.0, (target - current).total_seconds())
+
+
+def _clear_directory_contents(path: Path) -> None:
+    if not path.exists():
+        return
+    for child in path.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            try:
+                child.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _get_config_value(config: AstrBotConfig | dict | None, key: str, default: Any) -> Any:
@@ -153,6 +218,20 @@ def _parse_nhentai_gallery_id(urls: list[str]) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+def _extract_nhentai_title(payload: dict[str, Any], fallback: str) -> str:
+    title_info = payload.get("title")
+    if isinstance(title_info, dict):
+        for key in ("english", "pretty", "japanese"):
+            title = str(title_info.get(key) or "").strip()
+            if title:
+                return title
+    for key in ("title", "name"):
+        title = str(payload.get(key) or "").strip()
+        if title:
+            return title
+    return fallback
 
 
 def _extract_command_text(message: str, command: str) -> str:
@@ -366,13 +445,25 @@ def _format_result(result: SearchResult, order: int) -> str:
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.2")
+def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
+    return (
+        "找到第一个 nhentai 结果：\n"
+        f"ID: {candidate.gallery_id}\n"
+        f"标题: {candidate.title}\n\n"
+        f"需要下载请发送：/对的 {candidate.gallery_id}"
+    )
+
+
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.3")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
         self.context = context
         self.config = config or context.get_config()
+        self._cache_lock = threading.RLock()
+        self._cache_cleanup_task: asyncio.Task[None] | None = None
         self._refresh_config()
+        self._start_cache_cleanup_task()
 
     def _refresh_config(self) -> None:
         self.min_similarity = _coerce_float(
@@ -417,6 +508,59 @@ class XxComicGetPlugin(Star):
             _get_config_value(self.config, "nhentai.block_risky_tags", True),
             True,
         )
+        self.cache_cleanup_enabled = _coerce_bool(
+            _get_config_value(self.config, "cache.cleanup_enabled", True),
+            True,
+        )
+        self.cache_cleanup_hour = _coerce_int(
+            _get_config_value(
+                self.config,
+                "cache.cleanup_hour",
+                DEFAULT_CACHE_CLEANUP_HOUR,
+            ),
+            default=DEFAULT_CACHE_CLEANUP_HOUR,
+            min_value=0,
+            max_value=23,
+        )
+
+    def _start_cache_cleanup_task(self) -> None:
+        if self._cache_cleanup_task is not None or not self.cache_cleanup_enabled:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("缓存清理任务启动失败：当前没有运行中的事件循环")
+            return
+        self._cache_cleanup_task = loop.create_task(self._cache_cleanup_loop())
+
+    async def _cache_cleanup_loop(self) -> None:
+        while True:
+            try:
+                await self._cleanup_cache_if_due()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("插件缓存清理失败")
+            await asyncio.sleep(_seconds_until_next_cache_cleanup(self.cache_cleanup_hour))
+
+    async def _cleanup_cache_if_due(self) -> None:
+        now = time.time()
+        current = datetime.fromtimestamp(now)
+        if current.hour < self.cache_cleanup_hour:
+            return
+        cleanup_date = _cleanup_date_from_timestamp(now)
+        state = await asyncio.to_thread(_read_cache_cleanup_state)
+        if str(state.get("last_cleanup_date") or "") == cleanup_date:
+            return
+        await asyncio.to_thread(self._clear_cache_sync)
+        await asyncio.to_thread(_write_cache_cleanup_state, now, cleanup_date)
+
+    def _clear_cache_sync(self) -> None:
+        data_dir = _get_data_dir()
+        with self._cache_lock:
+            for name in ("downloads", "cookies"):
+                _clear_directory_contents(data_dir / name)
+        logger.info("已清理插件缓存：downloads, cookies")
 
     def _has_nhentai_api_key(self) -> bool:
         return bool(str(self.nhentai_api_key or "").strip())
@@ -430,6 +574,7 @@ class XxComicGetPlugin(Star):
     @filter.command("哈哈")
     async def search_comic(self, event: AstrMessageEvent):
         """识别随命令发送的图片来源"""
+        self._start_cache_cleanup_task()
         image = next(
             (component for component in event.get_messages() if isinstance(component, Image)),
             None,
@@ -457,56 +602,74 @@ class XxComicGetPlugin(Star):
             )
             return
 
-        best = matched[0]
-        gallery_id = _parse_nhentai_gallery_id(best.subject_urls)
-        if not self.download_enabled or not gallery_id:
+        first_nhentai = next(
+            (
+                NhentaiCandidate(gallery_id, result.title)
+                for result in matched
+                for gallery_id in [_parse_nhentai_gallery_id(result.subject_urls)]
+                if gallery_id
+            ),
+            None,
+        )
+        if not first_nhentai:
             body = "\n\n".join(
                 _format_result(result, index + 1)
                 for index, result in enumerate(matched[: self.max_results])
             )
             yield event.plain_result(f"找到了这些可能来源：\n\n{body}")
             return
+        yield event.plain_result(_format_nhentai_candidate(first_nhentai))
+
+    @filter.command("嘻嘻")
+    async def search_nhentai_text(self, event: AstrMessageEvent):
+        """按文本搜索 nhentai 并返回第一个结果，等待确认下载"""
+        self._start_cache_cleanup_task()
+        query = _extract_command_text(getattr(event, "message_str", ""), "嘻嘻")
+        if not query:
+            yield event.plain_result("？")
+            return
         if not self._has_nhentai_api_key():
             yield event.plain_result("未配置api")
             return
+
+        try:
+            candidate = await self._search_nhentai_first_gallery(query)
+        except EmptySearchResultError:
+            yield event.plain_result("空的。")
+            return
+        except Exception as exc:
+            logger.exception("nhentai 文本搜索失败")
+            yield event.plain_result(f"搜索失败：{exc}")
+            return
+
+        yield event.plain_result(_format_nhentai_candidate(candidate))
+
+    @filter.command("对的")
+    async def confirm_download_nhentai(self, event: AstrMessageEvent):
+        """按给定 nhentai ID 下载原图并生成 PDF"""
+        self._start_cache_cleanup_task()
+        gallery_id = _extract_command_text(getattr(event, "message_str", ""), "对的")
+        if not gallery_id:
+            yield event.plain_result("请发送：/对的 <nhentai id>")
+            return
+        if not re.fullmatch(r"\d+", gallery_id):
+            yield event.plain_result("nhentai id 只能是数字。")
+            return
+        if not self.download_enabled:
+            yield event.plain_result("当前配置已关闭 nhentai 下载。")
+            return
+        if not self._has_nhentai_api_key():
+            yield event.plain_result("未配置api")
+            return
+
+        yield event.plain_result("要点时间，等吧")
 
         try:
             download = await self._download_nhentai_gallery(gallery_id)
         except Exception as exc:
             logger.exception("nhentai 下载失败")
-            yield event.plain_result(
-                "找到了来源，但下载失败："
-                f"{exc}\n\n{_format_result(best, 1)}"
-            )
+            yield event.plain_result(f"下载失败：{exc}")
             return
-
-        yield self._build_pdf_result(event, download)
-
-    @filter.command("嘻嘻")
-    async def search_nhentai_text(self, event: AstrMessageEvent):
-        """按文本搜索 nhentai 并下载第一个结果"""
-        query = _extract_command_text(getattr(event, "message_str", ""), "嘻嘻")
-        if not query:
-            yield event.plain_result("？")
-            return
-        if not self.download_enabled:
-            yield event.plain_result("当前配置已关闭 nhentai 自动下载。")
-            return
-        if not self._has_nhentai_api_key():
-            yield event.plain_result("未配置api")
-            return
-
-        try:
-            gallery_id = await self._search_nhentai_first_gallery_id(query)
-            download = await self._download_nhentai_gallery(gallery_id)
-        except EmptySearchResultError:
-            yield event.plain_result("空的。")
-            return
-        except Exception as exc:
-            logger.exception("nhentai 文本搜索或下载失败")
-            yield event.plain_result(f"搜索或下载失败：{exc}")
-            return
-
         yield self._build_pdf_result(event, download)
 
     async def _search_soutubot(self, image_path: Path) -> list[SearchResult]:
@@ -632,12 +795,12 @@ class XxComicGetPlugin(Star):
         )
 
     async def _download_nhentai_gallery(self, gallery_id: str) -> GalleryDownload:
-        return await asyncio.to_thread(self._download_nhentai_gallery_sync, gallery_id)
+        return await asyncio.to_thread(self._download_nhentai_gallery_sync_locked, gallery_id)
 
-    async def _search_nhentai_first_gallery_id(self, query: str) -> str:
-        return await asyncio.to_thread(self._search_nhentai_first_gallery_id_sync, query)
+    async def _search_nhentai_first_gallery(self, query: str) -> NhentaiCandidate:
+        return await asyncio.to_thread(self._search_nhentai_first_gallery_sync, query)
 
-    def _search_nhentai_first_gallery_id_sync(self, query: str) -> str:
+    def _search_nhentai_first_gallery_sync(self, query: str) -> NhentaiCandidate:
         search_query = query.strip()
         if not search_query:
             raise RuntimeError("搜索文本为空")
@@ -673,7 +836,12 @@ class XxComicGetPlugin(Star):
         gallery_id = str(first.get("id") or first.get("gallery_id") or "").strip()
         if not gallery_id:
             raise RuntimeError("第一个搜索结果没有 gallery id")
-        return gallery_id
+        title = _extract_nhentai_title(first, f"nhentai {gallery_id}")
+        return NhentaiCandidate(gallery_id=gallery_id, title=title)
+
+    def _download_nhentai_gallery_sync_locked(self, gallery_id: str) -> GalleryDownload:
+        with self._cache_lock:
+            return self._download_nhentai_gallery_sync(gallery_id)
 
     def _download_nhentai_gallery_sync(self, gallery_id: str) -> GalleryDownload:
         api_key = self._require_nhentai_api_key()
@@ -836,4 +1004,10 @@ class XxComicGetPlugin(Star):
         )
 
     async def terminate(self) -> None:
-        pass
+        if self._cache_cleanup_task is not None:
+            self._cache_cleanup_task.cancel()
+            try:
+                await self._cache_cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cache_cleanup_task = None
