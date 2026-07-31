@@ -10,7 +10,7 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 /哈哈
 ```
 
-插件会用 Playwright 打开 `https://soutubot.moe/`，通过页面上传图片并解析搜索结果。若搜索结果里有 `nhentai`，会先返回第一个 `nhentai` 结果的 ID 和标题。
+插件会用 Playwright 打开 `https://soutubot.moe/`，通过页面上传图片并解析搜索结果。若搜索结果里有 `nhentai`，会先返回第一个 `nhentai` 结果的 ID、标题和链接。
 
 也可以直接按文本搜索 nhentai，并返回第一个搜索结果：
 
@@ -60,8 +60,8 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 ## 下载与发送
 
-- `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID 和标题，其他来源只返回搜索结果。
-- `/嘻嘻` 会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，返回第一个搜索结果的 ID 和标题。
+- `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果。
+- `/嘻嘻` 会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，返回第一个搜索结果的 ID、标题和链接。
 - `/对的 <id>` 会通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表，下载原图后合成为加密 PDF 发送。
 - 下载图片保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
 - PDF 保存在插件数据目录的 `downloads/{gallery_id}/{gallery_id}.pdf`，文件名使用 nhentai ID。

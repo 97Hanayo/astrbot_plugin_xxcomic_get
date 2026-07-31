@@ -449,12 +449,12 @@ def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     return (
         "找到第一个 nhentai 结果：\n"
         f"ID: {candidate.gallery_id}\n"
-        f"标题: {candidate.title}\n\n"
-        f"需要下载请发送：/对的 {candidate.gallery_id}"
+        f"标题: {candidate.title}\n"
+        f"链接: https://nhentai.net/g/{candidate.gallery_id}/"
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.3")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.4")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
