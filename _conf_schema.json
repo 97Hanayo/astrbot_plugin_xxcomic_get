@@ -1,0 +1,81 @@
+{
+  "soutubot": {
+    "description": "SoutuBot 搜索设置",
+    "type": "object",
+    "items": {
+      "min_similarity": {
+        "description": "最低相似度",
+        "type": "float",
+        "hint": "低于这个相似度的结果不会返回。SoutuBot 官方客户端使用 45 作为可信阈值。",
+        "default": 45,
+        "min": 0,
+        "max": 100
+      },
+      "max_results": {
+        "description": "最多解析结果数",
+        "type": "int",
+        "hint": "建议 1-5 条。自动下载只会使用最高匹配结果。",
+        "default": 3,
+        "min": 1,
+        "max": 10
+      },
+      "timeout_ms": {
+        "description": "超时毫秒",
+        "type": "int",
+        "hint": "包含打开首页、上传搜索、API 和图片下载的单请求超时。",
+        "default": 60000,
+        "min": 10000,
+        "max": 180000
+      },
+      "headless": {
+        "description": "无头浏览器",
+        "type": "bool",
+        "hint": "部署环境通常保持开启。排查 Cloudflare/浏览器问题时可以临时关闭。",
+        "default": true
+      }
+    }
+  },
+  "nhentai": {
+    "description": "nhentai 原图下载设置",
+    "type": "object",
+    "items": {
+      "download_enabled": {
+        "description": "自动下载最高匹配结果",
+        "type": "bool",
+        "default": true
+      },
+      "cookies": {
+        "description": "nhentai Cookies",
+        "type": "string",
+        "hint": "可填写 Netscape cookies.txt 内容、cookies.txt 文件路径，或 k=v; k2=v2 形式。不要在公开日志中输出。",
+        "default": ""
+      },
+      "max_download_pages": {
+        "description": "最大下载页数",
+        "type": "int",
+        "default": 120,
+        "min": 1,
+        "max": 300
+      },
+      "download_retries": {
+        "description": "单页下载重试次数",
+        "type": "int",
+        "default": 2,
+        "min": 0,
+        "max": 5
+      },
+      "send_forward": {
+        "description": "合并聊天记录发送",
+        "type": "bool",
+        "hint": "优先使用 OneBot v11 合并转发；失败时会回退为逐张图片。",
+        "default": true
+      },
+      "block_risky_tags": {
+        "description": "阻止风险标签",
+        "type": "bool",
+        "hint": "命中 lolicon、shotacon 等风险标签时停止自动下载。",
+        "default": true
+      }
+    }
+  }
+}
