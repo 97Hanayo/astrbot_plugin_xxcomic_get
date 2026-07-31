@@ -56,6 +56,12 @@
         "hint": "必填。请求 nhentai API v2 时会作为 Authorization: Key <api_key> 发送；为空时相关命令返回“未配置api”。请勿公开输出。",
         "default": ""
       },
+      "proxy": {
+        "description": "nhentai 代理",
+        "type": "string",
+        "hint": "可选。当前运行环境无法直连 nhentai 或出现 SSL EOF 时填写 HTTP/HTTPS 代理，例如 http://127.0.0.1:7890。",
+        "default": ""
+      },
       "max_download_pages": {
         "description": "最大下载页数",
         "type": "int",
@@ -69,12 +75,6 @@
         "default": 2,
         "min": 0,
         "max": 5
-      },
-      "send_forward": {
-        "description": "合并聊天记录发送",
-        "type": "bool",
-        "hint": "优先使用 OneBot v11 合并转发；失败时会回退为逐张图片。",
-        "default": true
       },
       "block_risky_tags": {
         "description": "阻止风险标签",

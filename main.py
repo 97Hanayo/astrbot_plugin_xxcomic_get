@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import secrets
 import shutil
+import ssl
+import string
 import time
 import urllib.error
 import urllib.parse
@@ -14,7 +17,7 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image, Node, Plain
+from astrbot.api.message_components import File, Image, Plain
 from astrbot.api.star import Context, Star, StarTools, register
 
 
@@ -54,6 +57,8 @@ class GalleryDownload:
     media_id: str
     title: str
     image_paths: list[Path]
+    pdf_path: Path
+    pdf_password: str
     metadata_path: Path
 
 
@@ -216,15 +221,131 @@ def _join_url(base_url: str, path: str) -> str:
     return urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
 
 
-def _request_bytes(url: str, headers: dict[str, str], timeout: float) -> tuple[bytes, str]:
+def _build_url_opener(proxy: str | None = None) -> urllib.request.OpenerDirector:
+    proxy_url = str(proxy or "").strip()
+    if not proxy_url:
+        return urllib.request.build_opener()
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler(
+            {
+                "http": proxy_url,
+                "https": proxy_url,
+            }
+        )
+    )
+
+
+def _is_ssl_unexpected_eof(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, ssl.SSLError) and "UNEXPECTED_EOF_WHILE_READING" in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return "UNEXPECTED_EOF_WHILE_READING" in str(exc)
+
+
+def _request_bytes(
+    url: str,
+    headers: dict[str, str],
+    timeout: float,
+    proxy: str | None = None,
+) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        content_type = response.headers.get("content-type", "")
-        return response.read(), content_type
+    try:
+        with _build_url_opener(proxy).open(request, timeout=timeout) as response:
+            content_type = response.headers.get("content-type", "")
+            return response.read(), content_type
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"nhentai HTTP {exc.code}: {exc.reason}") from exc
+    except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
+        if _is_ssl_unexpected_eof(exc):
+            raise RuntimeError(
+                "nhentai HTTPS 连接被提前关闭，通常是当前运行环境无法直连目标站点、"
+                "代理没有生效或 TLS 被中间网络拦截；请配置 nhentai.proxy 后重试。"
+            ) from exc
+        raise
 
 
-def _load_json_url(url: str, headers: dict[str, str], timeout: float) -> dict[str, Any]:
-    body, content_type = _request_bytes(url, headers, timeout)
+def _generate_pdf_password(length: int = 6) -> str:
+    alphabet = string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _save_image_as_pdf_page(image_path: Path, pdf_path: Path) -> None:
+    try:
+        from PIL import Image as PilImage
+    except Exception as exc:
+        raise RuntimeError("当前环境缺少 Pillow，无法把图片合成为 PDF") from exc
+
+    with PilImage.open(image_path) as image:
+        image.load()
+        if image.mode == "RGB":
+            page = image.copy()
+        elif image.mode in {"RGBA", "LA"} or (
+            image.mode == "P" and "transparency" in image.info
+        ):
+            page = PilImage.new("RGB", image.size, "white")
+            alpha = image.convert("RGBA")
+            page.paste(alpha, mask=alpha.getchannel("A"))
+        else:
+            page = image.convert("RGB")
+        page.save(pdf_path, "PDF", resolution=100.0)
+
+
+def _encrypt_pdf_pages(page_paths: list[Path], output_path: Path, password: str) -> None:
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception as exc:
+        raise RuntimeError("当前环境缺少 pypdf，无法生成加密 PDF；请安装插件依赖后重试") from exc
+
+    writer = PdfWriter()
+    for page_path in page_paths:
+        reader = PdfReader(str(page_path))
+        writer.add_page(reader.pages[0])
+
+    try:
+        writer.encrypt(
+            user_password=password,
+            owner_password=password,
+            algorithm="AES-256",
+        )
+    except TypeError:
+        writer.encrypt(user_password=password, owner_password=password)
+
+    with output_path.open("wb") as output:
+        writer.write(output)
+
+
+def _create_encrypted_pdf_from_images(
+    image_paths: list[Path],
+    output_path: Path,
+    password: str,
+) -> None:
+    if not image_paths:
+        raise RuntimeError("没有可用于生成 PDF 的图片")
+
+    temp_dir = output_path.parent / ".pdf_pages"
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        page_paths: list[Path] = []
+        for index, image_path in enumerate(image_paths, 1):
+            page_path = temp_dir / f"{index:04d}.pdf"
+            _save_image_as_pdf_page(image_path, page_path)
+            page_paths.append(page_path)
+        _encrypt_pdf_pages(page_paths, output_path, password)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _load_json_url(
+    url: str,
+    headers: dict[str, str],
+    timeout: float,
+    proxy: str | None = None,
+) -> dict[str, Any]:
+    body, content_type = _request_bytes(url, headers, timeout, proxy=proxy)
     if "json" not in content_type:
         raise RuntimeError(f"接口没有返回 JSON：{content_type}")
     return json.loads(body.decode("utf-8"))
@@ -245,7 +366,7 @@ def _format_result(result: SearchResult, order: int) -> str:
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.1")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.2")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -279,6 +400,7 @@ class XxComicGetPlugin(Star):
         )
         self.nhentai_cookies = _get_config_value(self.config, "nhentai.cookies", "")
         self.nhentai_api_key = _get_config_value(self.config, "nhentai.api_key", "")
+        self.nhentai_proxy = str(_get_config_value(self.config, "nhentai.proxy", "") or "").strip()
         self.max_download_pages = _coerce_int(
             _get_config_value(self.config, "nhentai.max_download_pages", 120),
             default=120,
@@ -293,10 +415,6 @@ class XxComicGetPlugin(Star):
         )
         self.block_risky_tags = _coerce_bool(
             _get_config_value(self.config, "nhentai.block_risky_tags", True),
-            True,
-        )
-        self.send_forward = _coerce_bool(
-            _get_config_value(self.config, "nhentai.send_forward", True),
             True,
         )
 
@@ -362,17 +480,7 @@ class XxComicGetPlugin(Star):
             )
             return
 
-        yield event.plain_result(download.title)
-        if self.send_forward:
-            try:
-                yield self._build_forward_result(event, download)
-                return
-            except Exception as exc:
-                logger.exception("合并转发构造失败，回退为逐张发送")
-                yield event.plain_result(f"合并聊天记录发送失败，改为逐张发送：{exc}")
-
-        for image_file in download.image_paths:
-            yield event.chain_result([Image.fromFileSystem(str(image_file))])
+        yield self._build_pdf_result(event, download)
 
     @filter.command("嘻嘻")
     async def search_nhentai_text(self, event: AstrMessageEvent):
@@ -399,17 +507,7 @@ class XxComicGetPlugin(Star):
             yield event.plain_result(f"搜索或下载失败：{exc}")
             return
 
-        yield event.plain_result(download.title)
-        if self.send_forward:
-            try:
-                yield self._build_forward_result(event, download)
-                return
-            except Exception as exc:
-                logger.exception("合并转发构造失败，回退为逐张发送")
-                yield event.plain_result(f"合并聊天记录发送失败，改为逐张发送：{exc}")
-
-        for image_file in download.image_paths:
-            yield event.chain_result([Image.fromFileSystem(str(image_file))])
+        yield self._build_pdf_result(event, download)
 
     async def _search_soutubot(self, image_path: Path) -> list[SearchResult]:
         if not image_path.exists():
@@ -559,7 +657,12 @@ class XxComicGetPlugin(Star):
             headers["Cookie"] = cookie_header
         _add_nhentai_auth_header(headers, api_key)
 
-        payload = _load_json_url(url, headers, timeout=max(10.0, self.timeout_ms / 1000))
+        payload = _load_json_url(
+            url,
+            headers,
+            timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.nhentai_proxy,
+        )
         raw_results = payload.get("result") or payload.get("results") or payload.get("data")
         if not isinstance(raw_results, list) or not raw_results:
             raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
@@ -594,11 +697,13 @@ class XxComicGetPlugin(Star):
             NHENTAI_API_URL.format(gallery_id=gallery_id),
             headers,
             timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.nhentai_proxy,
         )
         cdn_config = _load_json_url(
             NHENTAI_CDN_URL,
             headers,
             timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.nhentai_proxy,
         )
         image_servers = cdn_config.get("image_servers")
         if not isinstance(image_servers, list) or not image_servers:
@@ -660,6 +765,7 @@ class XxComicGetPlugin(Star):
                         image_url,
                         image_headers,
                         timeout=max(10.0, self.timeout_ms / 1000),
+                        proxy=self.nhentai_proxy,
                     )
                     if not content_type.startswith("image/"):
                         raise RuntimeError(f"返回内容不是图片：{content_type}")
@@ -686,6 +792,10 @@ class XxComicGetPlugin(Star):
         if failures:
             raise RuntimeError(f"原图下载不完整：成功 {len(downloaded)} 张，失败 {len(failures)} 张")
 
+        pdf_path = gallery_dir / f"{gallery_id}.pdf"
+        pdf_password = _generate_pdf_password()
+        _create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
+
         metadata_path = gallery_dir / "metadata.json"
         metadata_path.write_text(
             json.dumps(
@@ -696,6 +806,7 @@ class XxComicGetPlugin(Star):
                     "num_pages": metadata.get("num_pages"),
                     "downloaded": downloaded,
                     "failures": failures,
+                    "pdf": pdf_path.name,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -707,40 +818,22 @@ class XxComicGetPlugin(Star):
             media_id=media_id,
             title=title,
             image_paths=image_paths,
+            pdf_path=pdf_path,
+            pdf_password=pdf_password,
             metadata_path=metadata_path,
         )
 
-    def _build_forward_result(self, event: AstrMessageEvent, download: GalleryDownload):
-        try:
-            uin = int(event.get_sender_id())
-        except Exception:
-            uin = 0
-        try:
-            name = event.get_sender_name() or "SoutuBot"
-        except Exception:
-            name = "SoutuBot"
-        nodes = [
-            Node(
-                uin=uin,
-                name=name,
-                content=[
-                    Plain(
-                        f"{download.title}\n"
-                        f"ID: {download.gallery_id}\n"
-                        f"页数: {len(download.image_paths)}"
-                    )
-                ],
-            )
-        ]
-        nodes.extend(
-            Node(
-                uin=uin,
-                name=name,
-                content=[Image.fromFileSystem(str(image_path))],
-            )
-            for image_path in download.image_paths
+    def _build_pdf_result(self, event: AstrMessageEvent, download: GalleryDownload):
+        return event.chain_result(
+            [
+                Plain(
+                    f"ID: {download.gallery_id}\n"
+                    f"页数: {len(download.image_paths)}\n"
+                    f"密码: {download.pdf_password}"
+                ),
+                File(name=f"{download.gallery_id}.pdf", file=str(download.pdf_path)),
+            ]
         )
-        return event.chain_result(nodes)
 
     async def terminate(self) -> None:
         pass

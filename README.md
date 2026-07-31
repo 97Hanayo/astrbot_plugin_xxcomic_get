@@ -10,7 +10,7 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 /哈哈
 ```
 
-插件会用 Playwright 打开 `https://soutubot.moe/`，通过页面上传图片并解析搜索结果。若最高匹配结果来自 `nhentai`，会通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表，下载原图后先发送标题，再按顺序用合并聊天记录发送图片。
+插件会用 Playwright 打开 `https://soutubot.moe/`，通过页面上传图片并解析搜索结果。若最高匹配结果来自 `nhentai`，会通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表，下载原图后合成为加密 PDF 发送。
 
 也可以直接按文本搜索 nhentai，并下载第一个搜索结果：
 
@@ -31,8 +31,8 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 | `nhentai.download_enabled` | 是否自动下载最高匹配的 nhentai 结果 | `true` |
 | `nhentai.cookies` | nhentai Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
 | `nhentai.api_key` | nhentai API Key，会作为 `Authorization: Key <api_key>` 请求头发送；为空时相关命令返回 `未配置api` | 空 |
+| `nhentai.proxy` | nhentai API 和原图下载代理，例如 `http://127.0.0.1:7890`；出现 SSL EOF 时优先检查此项 | 空 |
 | `nhentai.max_download_pages` | 最大下载页数 | `120` |
-| `nhentai.send_forward` | 是否优先合并聊天记录发送 | `true` |
 | `nhentai.block_risky_tags` | 是否阻止风险标签自动下载 | `true` |
 
 SoutuBot 不需要 SauceNAO API Key。
@@ -56,10 +56,12 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 - `/哈哈` 自动下载只处理最高匹配的 `nhentai` 结果，其他来源只返回搜索结果。
 - `/嘻嘻` 会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，直接使用第一个搜索结果。
-- 下载文件保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
+- 下载图片保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
+- PDF 保存在插件数据目录的 `downloads/{gallery_id}/{gallery_id}.pdf`，文件名使用 nhentai ID。
+- PDF 会随机生成 6 位小写字母加数字密码，并随发送消息一起给出。
 - 原图地址通过 `https://nhentai.net/api/v2/cdn` 返回的 `image_servers` 拼接 API 返回的 `pages[].path`，不硬编码 CDN 子域名，也不通过连续探测猜页数。
-- 合并聊天记录主要适配 OneBot v11；平台不支持时会回退为逐张图片。
 - Cookie 和 API Key 只用于请求，不会主动输出到日志或回复。
+- 若已经配置 API Key 但提示 `SSL: UNEXPECTED_EOF_WHILE_READING`，通常不是 key 错误，而是运行环境到 `nhentai.net` 的 HTTPS 连接被提前关闭；请给 AstrBot 所在环境配置可访问的 `nhentai.proxy`。
 
 ## 说明
 
