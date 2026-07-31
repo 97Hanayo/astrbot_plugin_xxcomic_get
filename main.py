@@ -418,6 +418,63 @@ def _create_encrypted_pdf_from_images(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _read_gallery_metadata(metadata_path: Path) -> dict[str, Any]:
+    if not metadata_path.exists():
+        return {}
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _metadata_title(metadata: dict[str, Any], fallback: str) -> str:
+    title_info = metadata.get("title")
+    if isinstance(title_info, dict):
+        for key in ("english", "pretty", "japanese"):
+            title = str(title_info.get(key) or "").strip()
+            if title:
+                return title
+    title = str(title_info or "").strip()
+    return title or fallback
+
+
+def _load_cached_gallery_download(gallery_id: str) -> GalleryDownload | None:
+    gallery_dir = _get_download_dir(gallery_id)
+    images_dir = gallery_dir / "originals"
+    pdf_path = gallery_dir / f"{gallery_id}.pdf"
+    metadata_path = gallery_dir / "metadata.json"
+    cached_metadata = _read_gallery_metadata(metadata_path)
+    cached_pdf_password = str(cached_metadata.get("pdf_password") or "").strip()
+    cached_downloaded = cached_metadata.get("downloaded")
+    if (
+        not pdf_path.exists()
+        or pdf_path.stat().st_size <= 0
+        or not cached_pdf_password
+        or not isinstance(cached_downloaded, list)
+        or not cached_downloaded
+    ):
+        return None
+
+    image_paths = [
+        images_dir / str(item.get("file") or "")
+        for item in cached_downloaded
+        if isinstance(item, dict) and item.get("file")
+    ]
+    if not image_paths or not all(path.exists() and path.stat().st_size > 0 for path in image_paths):
+        return None
+
+    return GalleryDownload(
+        gallery_id=gallery_id,
+        media_id=str(cached_metadata.get("media_id") or ""),
+        title=_metadata_title(cached_metadata, f"nhentai {gallery_id}"),
+        image_paths=image_paths,
+        pdf_path=pdf_path,
+        pdf_password=cached_pdf_password,
+        metadata_path=metadata_path,
+    )
+
+
 def _load_json_url(
     url: str,
     headers: dict[str, str],
@@ -454,7 +511,7 @@ def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.4")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai", "1.0.5")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -655,6 +712,14 @@ class XxComicGetPlugin(Star):
         if not re.fullmatch(r"\d+", gallery_id):
             yield event.plain_result("nhentai id 只能是数字。")
             return
+        cached_download = await asyncio.to_thread(
+            self._load_cached_gallery_download_locked,
+            gallery_id,
+        )
+        if cached_download is not None:
+            logger.info("复用 nhentai 缓存：%s", gallery_id)
+            yield self._build_pdf_result(event, cached_download)
+            return
         if not self.download_enabled:
             yield event.plain_result("当前配置已关闭 nhentai 下载。")
             return
@@ -843,13 +908,22 @@ class XxComicGetPlugin(Star):
         with self._cache_lock:
             return self._download_nhentai_gallery_sync(gallery_id)
 
+    def _load_cached_gallery_download_locked(self, gallery_id: str) -> GalleryDownload | None:
+        with self._cache_lock:
+            return _load_cached_gallery_download(gallery_id)
+
     def _download_nhentai_gallery_sync(self, gallery_id: str) -> GalleryDownload:
+        cached_download = _load_cached_gallery_download(gallery_id)
+        if cached_download is not None:
+            logger.info("复用 nhentai 缓存：%s", gallery_id)
+            return cached_download
+
         api_key = self._require_nhentai_api_key()
         gallery_dir = _get_download_dir(gallery_id)
         images_dir = gallery_dir / "originals"
-        if images_dir.exists():
-            shutil.rmtree(images_dir)
         images_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = gallery_dir / f"{gallery_id}.pdf"
+        metadata_path = gallery_dir / "metadata.json"
 
         cookie_header = _cookie_header_from_setting(self.nhentai_cookies)
         headers = {
@@ -926,6 +1000,19 @@ class XxComicGetPlugin(Star):
             suffix = Path(urllib.parse.urlparse(page_path).path).suffix or ".webp"
             file_path = images_dir / f"{index:04d}{suffix}"
             image_url = _join_url(image_base_url, page_path)
+            if file_path.exists() and file_path.stat().st_size > 0:
+                image_paths.append(file_path)
+                downloaded.append(
+                    {
+                        "file": file_path.name,
+                        "bytes": file_path.stat().st_size,
+                        "width": item.get("width"),
+                        "height": item.get("height"),
+                        "url": image_url,
+                        "cached": True,
+                    }
+                )
+                continue
             last_error: str | None = None
             for attempt in range(self.download_retries + 1):
                 try:
@@ -946,6 +1033,7 @@ class XxComicGetPlugin(Star):
                             "width": item.get("width"),
                             "height": item.get("height"),
                             "url": image_url,
+                            "cached": False,
                         }
                     )
                     last_error = None
@@ -960,11 +1048,9 @@ class XxComicGetPlugin(Star):
         if failures:
             raise RuntimeError(f"原图下载不完整：成功 {len(downloaded)} 张，失败 {len(failures)} 张")
 
-        pdf_path = gallery_dir / f"{gallery_id}.pdf"
         pdf_password = _generate_pdf_password()
         _create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
 
-        metadata_path = gallery_dir / "metadata.json"
         metadata_path.write_text(
             json.dumps(
                 {
@@ -975,6 +1061,7 @@ class XxComicGetPlugin(Star):
                     "downloaded": downloaded,
                     "failures": failures,
                     "pdf": pdf_path.name,
+                    "pdf_password": pdf_password,
                 },
                 ensure_ascii=False,
                 indent=2,
