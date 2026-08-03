@@ -101,14 +101,6 @@ DOWNLOAD_ID_PATTERNS = (
     ("nhentai", re.compile(r"\d+")),
 )
 DOWNLOAD_COMMANDS = ("对的", "JJ", "bkdl")
-COMPACT_DOWNLOAD_COMMAND_PATTERN = re.compile(
-    r"^/?(?:"
-    r"对的\+?(?:jm\d+|[0-9a-f]{24}|\d+)"
-    r"|JJ\+?jm\d+"
-    r"|bkdl\+?[0-9a-f]{24}"
-    r")$",
-    re.IGNORECASE,
-)
 
 
 @dataclass(slots=True)
@@ -414,13 +406,6 @@ def _extract_download_command(message: str) -> tuple[str, str]:
         extracted = _extract_command_text(text, command)
         if extracted != text:
             return command, extracted
-        compact_match = re.fullmatch(
-            rf"/?{re.escape(command)}\+?(\S+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if compact_match:
-            return command, compact_match.group(1)
     # 某些适配器/命令过滤器会把命令名从 message_str 中移除，只留下参数。
     # 统一入口可以根据 ID 格式兜底识别这种情况。
     if text and any(pattern.fullmatch(text) for _, pattern in DOWNLOAD_ID_PATTERNS):
@@ -1643,14 +1628,6 @@ class XxComicGetPlugin(Star):
             yield event.plain_result(f"下载失败：{exc}")
             return
         yield self._build_download_result(event, download)
-
-    @filter.regex(COMPACT_DOWNLOAD_COMMAND_PATTERN)
-    async def download_by_compact_id(self, event: AstrMessageEvent):
-        """兼容 /对的123、/对的+123 这类没有空格的下载写法"""
-        if not getattr(event, "is_at_or_wake_command", False):
-            return
-        async for result in self.download_by_id(event):
-            yield result
 
     async def _search_soutubot(self, image_path: Path) -> list[SearchResult]:
         if not image_path.exists():
