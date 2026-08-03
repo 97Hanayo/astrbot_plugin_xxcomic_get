@@ -89,7 +89,7 @@
     "type": "object",
     "items": {
       "download_enabled": {
-        "description": "允许 /JJ 下载禁漫本子",
+        "description": "允许 /对的 或 /JJ 下载禁漫本子",
         "type": "bool",
         "default": true
       },
@@ -136,6 +136,26 @@
         "default": 5,
         "min": 1,
         "max": 10
+      },
+      "download_enabled": {
+        "description": "允许 /对的 或 /bkdl 下载哔咔漫画",
+        "type": "bool",
+        "default": true
+      },
+      "max_download_pages": {
+        "description": "哔咔最大下载页数",
+        "type": "int",
+        "hint": "整本分话合计页数超过此上限时停止下载。",
+        "default": 300,
+        "min": 1,
+        "max": 500
+      },
+      "download_retries": {
+        "description": "哔咔单图下载重试次数",
+        "type": "int",
+        "default": 2,
+        "min": 0,
+        "max": 5
       }
     }
   },

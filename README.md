@@ -38,11 +38,15 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 
 `/bklogin` 仅 AstrBot 管理员可调用，普通成员调用不会响应。插件只缓存哔咔返回的 token，不保存密码。
 
-确认需要下载时，再发送：
+拿到任一来源的 ID 后，统一使用 `/对的` 下载整本并生成加密 PDF：
 
 ```text
 /对的 123456
+/对的 jm112233
+/对的 64f1a2b3c4d5e6f789012345
 ```
+
+`/JJ jm112233` 和 `/bkdl 64f1a2b3c4d5e6f789012345` 仍保留为兼容别名。
 
 ## 配置
 
@@ -60,8 +64,11 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 | `nhentai.proxy` | nhentai API 和原图下载代理，例如 `http://127.0.0.1:7890`；出现 SSL EOF 时优先检查此项 | 空 |
 | `nhentai.max_download_pages` | 最大下载页数 | `120` |
 | `nhentai.block_risky_tags` | 是否阻止风险标签自动下载 | `true` |
-| `pica.proxy` | 哔咔 API 代理，例如 `http://127.0.0.1:7890` | 空 |
+| `pica.proxy` | 哔咔 API 和图片下载代理，例如 `http://127.0.0.1:7890` | 空 |
 | `pica.max_results` | `/bk` 最多返回结果数 | `5` |
+| `pica.download_enabled` | 是否允许通过 `/对的 <24位ID>` 下载哔咔漫画 | `true` |
+| `pica.max_download_pages` | 哔咔整本最大下载页数 | `300` |
+| `pica.download_retries` | 哔咔单图下载重试次数 | `2` |
 
 SoutuBot 不需要 SauceNAO API Key。
 
@@ -88,7 +95,9 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 - `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，只返回第一页第一条结果的标题和 ID，不下载。
 - `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回 ID、标题、作者、分类、标签和页数等摘要，不下载。
 - `/bklogin <用户名> <密码>` 会调用哔咔 `POST /auth/sign-in` 获取 token，仅管理员可调用；token 缓存在插件数据目录的 `accounts/pica_token.json`。
-- `/对的 <id>` 会通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表，下载原图后合成为加密 PDF 发送。
+- `/对的 <id>` 是统一下载入口：`jm` 加数字匹配禁漫，24 位十六进制字符串优先匹配哔咔，其他纯数字匹配 nhentai；下载前先复用完整缓存，最终始终校验为加密 PDF。
+- `/JJ <jm id>` 和 `/bkdl <哔咔漫画ID>` 是兼容别名，分别转发到 `/对的` 的同一套下载流程。
+- nhentai 通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表；哔咔图片地址可能访问 `img.picacomic.com`、`storage-b.picacomic.com`、`storage1.picacomic.com`。
 - 下载图片保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
 - PDF 保存在插件数据目录的 `downloads/{gallery_id}/{gallery_id}.pdf`，文件名使用 nhentai ID。
 - PDF 会随机生成 6 位小写字母加数字密码，并随发送消息一起给出。
@@ -98,18 +107,20 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 ## 说明
 
-- 命令入口：`/哈哈`、`/嘻嘻 <文本>`、`/JJS <文本>`、`/JJ <jm id>`、`/bk <文本>`、`/bklogin <用户名> <密码>`、`/对的 <id>`
+- 命令入口：`/哈哈`、`/嘻嘻 <文本>`、`/JJS <文本>`、`/bk <文本>`、`/bklogin <用户名> <密码>`、`/对的 <id>`；`/JJ`、`/bkdl` 为兼容别名
 - 只处理同一条消息中的第一张图片
 - 搜索服务：SoutuBot
-- 下载来源：nhentai API v2、jmcomic
+- 下载来源：nhentai API v2、jmcomic、哔咔 API
 
 ## 禁漫天堂直接下载
 
-发送：
+发送统一命令：
 
 ```text
-/JJ jm112233
+/对的 jm112233
 ```
+
+兼容旧命令：`/JJ jm112233`
 
 插件会调用 `jmcomic` 下载整本，并使用内置 PDF 导出能力生成加密 PDF。最终发送的文件名固定为输入 id，例如 `jm112233.pdf`；密码会随消息一起返回。id 仅接受 `jm+数字` 的形式。
 如果运行环境的 jmcomic PDF 导出没有产物，插件会用已下载图片兜底合成加密 PDF。
@@ -118,7 +129,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
-| `jmcomic.download_enabled` | 是否允许 `/JJ` 下载禁漫本子 | `true` |
+| `jmcomic.download_enabled` | 是否允许通过 `/对的 <jm id>` 下载禁漫本子 | `true` |
 | `jmcomic.domains` | jmcomic 使用的禁漫域名列表，逗号或空格分隔，会按顺序重试 | `18comic.vip,18comic.org,jmcomic1.me,jmcomic.me,18comic-palworld.vip,18comic-c.art,18comic-palworld.club` |
 | `jmcomic.domain` | 兼容旧配置；单个域名或逗号分隔的多个域名 | 空 |
 | `jmcomic.proxy` | 禁漫下载代理，例如 `http://127.0.0.1:7890` | 空 |
@@ -201,9 +212,31 @@ ID: ...
 
 这个登录命令只有 AstrBot 管理员能调用，普通成员调用不会响应。登录成功后插件会缓存 token 到插件数据目录；如果 token 过期，再由管理员重新执行 `/bklogin` 即可。
 
+下载搜索结果时使用返回的 24 位漫画 ID：
+
+```text
+/对的 64f1a2b3c4d5e6f789012345
+```
+
+兼容旧命令：`/bkdl 64f1a2b3c4d5e6f789012345`
+
+插件会依次读取详情、所有分话和每个分话的图片页，下载后生成加密 PDF。PDF 保存在插件数据目录的 `downloads/bk_{id}/bk_{id}.pdf`，密码会随文件一起返回。
+
+下载哔咔 PDF 时，代理需要能访问：
+
+```text
+picaapi.picacomic.com
+img.picacomic.com
+storage-b.picacomic.com
+storage1.picacomic.com
+```
+
 相关配置：
 
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
-| `pica.proxy` | 哔咔 API 代理，例如 `http://127.0.0.1:7890` | 空 |
+| `pica.proxy` | 哔咔 API 和图片下载代理，例如 `http://127.0.0.1:7890` | 空 |
 | `pica.max_results` | `/bk` 最多返回结果数 | `5` |
+| `pica.download_enabled` | 是否允许通过 `/对的 <24位ID>` 下载哔咔漫画 | `true` |
+| `pica.max_download_pages` | 哔咔整本最大下载页数 | `300` |
+| `pica.download_retries` | 哔咔单图下载重试次数 | `2` |

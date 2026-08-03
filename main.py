@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -32,6 +33,9 @@ NHENTAI_API_URL = "https://nhentai.net/api/v2/galleries/{gallery_id}"
 NHENTAI_SEARCH_URL = "https://nhentai.net/api/v2/search"
 NHENTAI_CDN_URL = "https://nhentai.net/api/v2/cdn"
 PICA_API_BASE_URL = "https://picaapi.picacomic.com/"
+PICA_IMAGE_TO_BE_IMG_URL = "https://img.picacomic.com"
+PICA_IMAGE_TO_BS_URL = "https://storage-b.picacomic.com"
+PICA_IMAGE_DEFAULT_URL = "https://storage1.picacomic.com"
 PICA_API_KEY = "C69BAF41DA5ABD1FFEDC6D2FEA56B"
 PICA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn"
 PICA_ACCEPT = "application/vnd.picacomic.com.v1+json"
@@ -66,6 +70,12 @@ BLOCKED_NHENTAI_TAGS = {
     "schoolgirl-uniform",
     "schoolboy-uniform",
 }
+DOWNLOAD_ID_PATTERNS = (
+    ("jmcomic", re.compile(r"jm\d+", re.IGNORECASE)),
+    ("pica", re.compile(r"[0-9a-f]{24}", re.IGNORECASE)),
+    ("nhentai", re.compile(r"\d+")),
+)
+DOWNLOAD_COMMANDS = ("对的", "JJ", "bkdl")
 
 
 @dataclass(slots=True)
@@ -97,6 +107,29 @@ class JmComicDownload:
     pdf_path: Path
     pdf_password: str
     metadata_path: Path
+
+
+@dataclass(slots=True)
+class PicaComicDownload:
+    comic_id: str
+    title: str
+    image_paths: list[Path]
+    pdf_path: Path
+    pdf_password: str
+    metadata_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadTarget:
+    source: str
+    identifier: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImageDownloadSpec:
+    path: Path
+    url: str
+    metadata: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -146,6 +179,10 @@ def _get_download_dir(gallery_id: str) -> Path:
     download_dir = _get_data_dir() / "downloads" / gallery_id
     download_dir.mkdir(parents=True, exist_ok=True)
     return download_dir
+
+
+def _get_pica_download_dir(comic_id: str) -> Path:
+    return _get_download_dir(f"bk_{comic_id}")
 
 
 def _get_cache_cleanup_state_file() -> Path:
@@ -310,6 +347,36 @@ def _normalize_jmcomic_id(value: str) -> str:
     if not re.fullmatch(r"jm\d+", text):
         raise ValueError("禁漫 id 必须是 jm+数字，例如 jm112233")
     return text
+
+
+def _normalize_pica_comic_id(value: str) -> str:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{24}", text):
+        raise ValueError("哔咔 id 必须是搜索结果返回的 24 位漫画 ID")
+    return text
+
+
+def _normalize_download_target(value: str) -> DownloadTarget:
+    text = str(value or "").strip()
+    if not text or any(char.isspace() for char in text):
+        raise ValueError("ID 格式不正确，请使用：纯数字 nhentai ID、jm+数字或 24 位哔咔 ID")
+    for source, pattern in DOWNLOAD_ID_PATTERNS:
+        if pattern.fullmatch(text):
+            if source == "jmcomic":
+                return DownloadTarget(source, _normalize_jmcomic_id(text))
+            if source == "pica":
+                return DownloadTarget(source, _normalize_pica_comic_id(text))
+            return DownloadTarget(source, text)
+    raise ValueError("ID 格式不正确，请使用：纯数字 nhentai ID、jm+数字或 24 位哔咔 ID")
+
+
+def _extract_download_command(message: str) -> tuple[str, str]:
+    text = (message or "").strip()
+    for command in DOWNLOAD_COMMANDS:
+        extracted = _extract_command_text(text, command)
+        if extracted != text:
+            return command, extracted
+    return "", ""
 
 
 def _jmcomic_numeric_id(comic_id: str) -> str:
@@ -477,6 +544,44 @@ def _pica_api_url(endpoint: str) -> str:
     return urllib.parse.urljoin(PICA_API_BASE_URL, endpoint.lstrip("/"))
 
 
+def _decode_pica_tobeimg_path(path: str) -> str:
+    filename = path.rsplit("/", 1)[-1]
+    encoded = filename.rsplit(".", 1)[0]
+    try:
+        return base64.b64decode(encoded).decode("utf-8")
+    except Exception:
+        return path
+
+
+def _stringify_pica_image_url(media: dict[str, Any]) -> str:
+    path = str(media.get("path") or "").strip()
+    file_server = str(media.get("fileServer") or "").strip()
+    if not path:
+        raise RuntimeError("哔咔图片缺少 path")
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if path.startswith("tobeimg/"):
+        if file_server.rstrip("/") in {PICA_IMAGE_DEFAULT_URL, PICA_IMAGE_TO_BS_URL}:
+            return _decode_pica_tobeimg_path(path)
+        file_server = file_server or PICA_IMAGE_TO_BE_IMG_URL
+        path = "/" + path.removeprefix("tobeimg/")
+    elif path.startswith("tobs/"):
+        file_server = file_server or PICA_IMAGE_TO_BS_URL
+        path = "/static/" + path.removeprefix("tobs/")
+    else:
+        file_server = file_server or PICA_IMAGE_DEFAULT_URL
+        path = "/static/" + path.lstrip("/")
+    return file_server.rstrip("/") + path
+
+
+def _pica_image_suffix(media: dict[str, Any], image_url: str) -> str:
+    for value in (media.get("originalName"), urllib.parse.urlparse(image_url).path):
+        suffix = Path(str(value or "")).suffix.lower()
+        if suffix in JMCOMIC_IMAGE_SUFFIXES:
+            return suffix
+    return ".jpg"
+
+
 def _pica_signature_endpoint(endpoint: str, query: dict[str, Any] | None = None) -> str:
     fixed_endpoint = endpoint.lstrip("/")
     if query:
@@ -535,6 +640,8 @@ def _request_bytes(
     headers: dict[str, str],
     timeout: float,
     proxy: str | None = None,
+    service_label: str = "nhentai",
+    proxy_setting: str = "nhentai.proxy",
 ) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers=headers)
     try:
@@ -542,14 +649,89 @@ def _request_bytes(
             content_type = response.headers.get("content-type", "")
             return response.read(), content_type
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"nhentai HTTP {exc.code}: {exc.reason}") from exc
+        raise RuntimeError(f"{service_label} HTTP {exc.code}: {exc.reason}") from exc
     except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
         if _is_ssl_unexpected_eof(exc):
             raise RuntimeError(
-                "nhentai HTTPS 连接被提前关闭，通常是当前运行环境无法直连目标站点、"
-                "代理没有生效或 TLS 被中间网络拦截；请配置 nhentai.proxy 后重试。"
+                f"{service_label} HTTPS 连接被提前关闭，通常是当前运行环境无法直连目标站点、"
+                f"代理没有生效或 TLS 被中间网络拦截；请配置 {proxy_setting} 后重试。"
             ) from exc
         raise
+
+
+def _download_image_specs(
+    specs: list[ImageDownloadSpec],
+    headers: dict[str, str],
+    timeout: float,
+    proxy: str | None,
+    retries: int,
+    service_label: str,
+    proxy_setting: str,
+) -> tuple[list[Path], list[dict[str, Any]], list[dict[str, Any]]]:
+    image_paths: list[Path] = []
+    downloaded: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for spec in specs:
+        if spec.path.exists() and spec.path.stat().st_size > 0:
+            image_paths.append(spec.path)
+            record = dict(spec.metadata)
+            record.update(
+                {
+                    "file": spec.path.name,
+                    "bytes": spec.path.stat().st_size,
+                    "url": spec.url,
+                    "cached": True,
+                }
+            )
+            downloaded.append(record)
+            continue
+
+        last_error: str | None = None
+        partial_path = spec.path.with_name(f".{spec.path.name}.part")
+        for attempt in range(retries + 1):
+            try:
+                body, content_type = _request_bytes(
+                    spec.url,
+                    headers,
+                    timeout=timeout,
+                    proxy=proxy,
+                    service_label=service_label,
+                    proxy_setting=proxy_setting,
+                )
+                normalized_content_type = content_type.split(";", 1)[0].strip().lower()
+                if not body:
+                    raise RuntimeError("返回空图片")
+                if normalized_content_type and not (
+                    normalized_content_type.startswith("image/")
+                    or normalized_content_type in {"application/octet-stream", "binary/octet-stream"}
+                ):
+                    raise RuntimeError(f"返回内容不是图片：{content_type}")
+                partial_path.write_bytes(body)
+                partial_path.replace(spec.path)
+                image_paths.append(spec.path)
+                record = dict(spec.metadata)
+                record.update(
+                    {
+                        "file": spec.path.name,
+                        "bytes": len(body),
+                        "url": spec.url,
+                        "cached": False,
+                    }
+                )
+                downloaded.append(record)
+                last_error = None
+                break
+            except (OSError, urllib.error.URLError, RuntimeError) as exc:
+                last_error = str(exc)
+                try:
+                    partial_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if attempt < retries:
+                    time.sleep(0.8 * (attempt + 1))
+        if last_error:
+            failures.append({**spec.metadata, "url": spec.url, "error": last_error})
+    return image_paths, downloaded, failures
 
 
 def _request_json(
@@ -675,6 +857,17 @@ def _ensure_pdf_encrypted(pdf_path: Path, password: str) -> None:
     temp_path.replace(pdf_path)
 
 
+def _is_usable_cached_pdf(pdf_path: Path, password: str) -> bool:
+    if not pdf_path.exists() or pdf_path.stat().st_size <= 0 or not password:
+        return False
+    try:
+        _ensure_pdf_encrypted(pdf_path, password)
+    except Exception:
+        logger.warning("缓存 PDF 无法验证或加密：%s", pdf_path)
+        return False
+    return pdf_path.exists() and pdf_path.stat().st_size > 0
+
+
 def _create_encrypted_pdf_from_images(
     image_paths: list[Path],
     output_path: Path,
@@ -683,6 +876,7 @@ def _create_encrypted_pdf_from_images(
     if not image_paths:
         raise RuntimeError("没有可用于生成 PDF 的图片")
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = output_path.parent / ".pdf_pages"
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
@@ -694,6 +888,7 @@ def _create_encrypted_pdf_from_images(
             _save_image_as_pdf_page(image_path, page_path)
             page_paths.append(page_path)
         _encrypt_pdf_pages(page_paths, output_path, password)
+        _ensure_pdf_encrypted(output_path, password)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -728,9 +923,7 @@ def _load_cached_gallery_download(gallery_id: str) -> GalleryDownload | None:
     cached_pdf_password = str(cached_metadata.get("pdf_password") or "").strip()
     cached_downloaded = cached_metadata.get("downloaded")
     if (
-        not pdf_path.exists()
-        or pdf_path.stat().st_size <= 0
-        or not cached_pdf_password
+        not _is_usable_cached_pdf(pdf_path, cached_pdf_password)
         or not isinstance(cached_downloaded, list)
         or not cached_downloaded
     ):
@@ -761,10 +954,42 @@ def _load_cached_jmcomic_download(comic_id: str) -> JmComicDownload | None:
     metadata_path = download_dir / "metadata.json"
     cached_metadata = _read_gallery_metadata(metadata_path)
     cached_pdf_password = str(cached_metadata.get("pdf_password") or "").strip()
-    if not pdf_path.exists() or pdf_path.stat().st_size <= 0 or not cached_pdf_password:
+    if not _is_usable_cached_pdf(pdf_path, cached_pdf_password):
         return None
     return JmComicDownload(
         comic_id=comic_id,
+        pdf_path=pdf_path,
+        pdf_password=cached_pdf_password,
+        metadata_path=metadata_path,
+    )
+
+
+def _load_cached_pica_download(comic_id: str) -> PicaComicDownload | None:
+    download_dir = _get_pica_download_dir(comic_id)
+    images_dir = download_dir / "originals"
+    pdf_path = download_dir / f"bk_{comic_id}.pdf"
+    metadata_path = download_dir / "metadata.json"
+    cached_metadata = _read_gallery_metadata(metadata_path)
+    cached_pdf_password = str(cached_metadata.get("pdf_password") or "").strip()
+    cached_downloaded = cached_metadata.get("downloaded")
+    if (
+        not _is_usable_cached_pdf(pdf_path, cached_pdf_password)
+        or not isinstance(cached_downloaded, list)
+        or not cached_downloaded
+    ):
+        return None
+
+    image_paths = [
+        images_dir / str(item.get("file") or "")
+        for item in cached_downloaded
+        if isinstance(item, dict) and item.get("file")
+    ]
+    if not image_paths or not all(path.exists() and path.stat().st_size > 0 for path in image_paths):
+        return None
+    return PicaComicDownload(
+        comic_id=comic_id,
+        title=str(cached_metadata.get("title") or f"哔咔 {comic_id}"),
+        image_paths=image_paths,
         pdf_path=pdf_path,
         pdf_password=cached_pdf_password,
         metadata_path=metadata_path,
@@ -881,7 +1106,7 @@ def _format_pica_candidates(candidates: list[PicaComicCandidate]) -> str:
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.1")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.3")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -955,6 +1180,22 @@ class XxComicGetPlugin(Star):
             default=5,
             min_value=1,
             max_value=10,
+        )
+        self.pica_download_enabled = _coerce_bool(
+            _get_config_value(self.config, "pica.download_enabled", True),
+            True,
+        )
+        self.pica_max_download_pages = _coerce_int(
+            _get_config_value(self.config, "pica.max_download_pages", 300),
+            default=300,
+            min_value=1,
+            max_value=500,
+        )
+        self.pica_download_retries = _coerce_int(
+            _get_config_value(self.config, "pica.download_retries", 2),
+            default=2,
+            min_value=0,
+            max_value=5,
         )
         self.cache_cleanup_enabled = _coerce_bool(
             _get_config_value(self.config, "cache.cleanup_enabled", True),
@@ -1173,76 +1414,53 @@ class XxComicGetPlugin(Star):
         yield event.plain_result(_format_pica_candidates(candidates))
 
     @filter.command("对的")
-    async def confirm_download_nhentai(self, event: AstrMessageEvent):
-        """按给定 nhentai ID 下载原图并生成 PDF"""
-        self._start_cache_cleanup_task()
-        gallery_id = _extract_command_text(getattr(event, "message_str", ""), "对的")
-        if not gallery_id:
-            yield event.plain_result("请发送：/对的 <nhentai id>")
-            return
-        if not re.fullmatch(r"\d+", gallery_id):
-            yield event.plain_result("nhentai id 只能是数字。")
-            return
-        cached_download = await asyncio.to_thread(
-            self._load_cached_gallery_download_locked,
-            gallery_id,
-        )
-        if cached_download is not None:
-            logger.info("复用 nhentai 缓存：%s", gallery_id)
-            yield self._build_pdf_result(event, cached_download)
-            return
-        if not self.download_enabled:
-            yield event.plain_result("当前配置已关闭 nhentai 下载。")
-            return
-        if not self._has_nhentai_api_key():
-            yield event.plain_result("未配置api")
-            return
-
-        yield event.plain_result("要点时间，等吧")
-
-        try:
-            download = await self._download_nhentai_gallery(gallery_id)
-        except Exception as exc:
-            logger.exception("nhentai 下载失败")
-            yield event.plain_result(f"下载失败：{exc}")
-            return
-        yield self._build_pdf_result(event, download)
-
     @filter.command("JJ")
-    async def download_jmcomic(self, event: AstrMessageEvent):
-        """按给定禁漫 ID 下载整本并生成加密 PDF"""
+    @filter.command("bkdl")
+    async def download_by_id(self, event: AstrMessageEvent):
+        """按 ID 类型统一下载 nhentai、禁漫或哔咔并生成加密 PDF"""
         self._start_cache_cleanup_task()
-        raw_id = _extract_command_text(getattr(event, "message_str", ""), "JJ")
+        command, raw_id = _extract_download_command(getattr(event, "message_str", ""))
         if not raw_id:
-            yield event.plain_result("请发送：/JJ jm112233")
+            yield event.plain_result("请发送：/对的 <nhentai数字ID、jm+数字或24位哔咔ID>")
             return
         try:
-            comic_id = _normalize_jmcomic_id(raw_id)
+            if command == "JJ":
+                target = DownloadTarget("jmcomic", _normalize_jmcomic_id(raw_id))
+            elif command == "bkdl":
+                target = DownloadTarget("pica", _normalize_pica_comic_id(raw_id))
+            else:
+                target = _normalize_download_target(raw_id)
         except ValueError as exc:
             yield event.plain_result(str(exc))
             return
 
-        cached_download = await asyncio.to_thread(
-            self._load_cached_jmcomic_download_locked,
-            comic_id,
-        )
+        cached_download = await self._load_cached_download(target)
         if cached_download is not None:
-            logger.info("复用 jmcomic 缓存：%s", comic_id)
-            yield self._build_jmcomic_pdf_result(event, cached_download)
-            return
-        if not self.jmcomic_download_enabled:
-            yield event.plain_result("当前配置已关闭禁漫下载。")
+            logger.info("复用 %s 缓存：%s", target.source, target.identifier)
+            yield self._build_download_result(event, cached_download)
             return
 
-        yield event.plain_result("开始下载禁漫本子并生成加密 PDF，可能需要一点时间。")
+        if not self._is_download_enabled(target.source):
+            yield event.plain_result(f"当前配置已关闭{self._source_label(target.source)}下载。")
+            return
+        if target.source == "nhentai" and not self._has_nhentai_api_key():
+            yield event.plain_result("未配置api")
+            return
+        if target.source == "pica" and not _read_pica_token():
+            yield event.plain_result("未登录哔咔，请先让管理员发送 /bklogin <用户名> <密码>")
+            return
+
+        yield event.plain_result(
+            f"开始下载{self._source_label(target.source)}并生成加密 PDF，可能需要一点时间。"
+        )
 
         try:
-            download = await self._download_jmcomic_album(comic_id)
+            download = await self._download_target(target)
         except Exception as exc:
-            logger.exception("jmcomic 下载失败")
+            logger.exception("%s 下载失败", target.source)
             yield event.plain_result(f"下载失败：{exc}")
             return
-        yield self._build_jmcomic_pdf_result(event, download)
+        yield self._build_download_result(event, download)
 
     async def _search_soutubot(self, image_path: Path) -> list[SearchResult]:
         if not image_path.exists():
@@ -1371,6 +1589,46 @@ class XxComicGetPlugin(Star):
 
     async def _download_jmcomic_album(self, comic_id: str) -> JmComicDownload:
         return await asyncio.to_thread(self._download_jmcomic_album_sync_locked, comic_id)
+
+    async def _download_pica_comic(self, comic_id: str) -> PicaComicDownload:
+        return await asyncio.to_thread(self._download_pica_comic_sync_locked, comic_id)
+
+    async def _load_cached_download(self, target: DownloadTarget):
+        return await asyncio.to_thread(self._load_cached_download_sync_locked, target)
+
+    def _load_cached_download_sync_locked(self, target: DownloadTarget):
+        with self._cache_lock:
+            if target.source == "nhentai":
+                return _load_cached_gallery_download(target.identifier)
+            if target.source == "jmcomic":
+                return _load_cached_jmcomic_download(target.identifier)
+            if target.source == "pica":
+                return _load_cached_pica_download(target.identifier)
+            raise ValueError(f"未知下载来源：{target.source}")
+
+    async def _download_target(self, target: DownloadTarget):
+        if target.source == "nhentai":
+            return await self._download_nhentai_gallery(target.identifier)
+        if target.source == "jmcomic":
+            return await self._download_jmcomic_album(target.identifier)
+        if target.source == "pica":
+            return await self._download_pica_comic(target.identifier)
+        raise ValueError(f"未知下载来源：{target.source}")
+
+    def _is_download_enabled(self, source: str) -> bool:
+        return {
+            "nhentai": self.download_enabled,
+            "jmcomic": self.jmcomic_download_enabled,
+            "pica": self.pica_download_enabled,
+        }.get(source, False)
+
+    @staticmethod
+    def _source_label(source: str) -> str:
+        return {
+            "nhentai": "nhentai",
+            "jmcomic": "禁漫本子",
+            "pica": "哔咔漫画",
+        }.get(source, source)
 
     async def _search_nhentai_first_gallery(self, query: str) -> NhentaiCandidate:
         candidates = await self._search_nhentai_galleries(query, 1)
@@ -1509,6 +1767,194 @@ class XxComicGetPlugin(Star):
         if not candidates:
             raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
         return candidates
+
+    def _pica_api_request_sync(
+        self,
+        method: str,
+        endpoint: str,
+        token: str,
+        query: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = _pica_api_url(endpoint)
+        if query:
+            url = f"{url}?{urllib.parse.urlencode(query)}"
+        return _request_json(
+            method,
+            url,
+            _build_pica_headers(method, endpoint, query, token=token),
+            timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.pica_proxy,
+            json_body=json_body,
+        )
+
+    def _fetch_pica_paged_docs_sync(
+        self,
+        endpoint: str,
+        token: str,
+        data_key: str,
+    ) -> list[dict[str, Any]]:
+        docs: list[dict[str, Any]] = []
+        page = 1
+        total_pages = 1
+        while page <= total_pages:
+            payload = self._pica_api_request_sync(
+                "GET",
+                endpoint,
+                token,
+                query={"page": page},
+            )
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise RuntimeError("哔咔分页接口返回格式不正确")
+            page_data = data.get(data_key)
+            if not isinstance(page_data, dict):
+                raise RuntimeError(f"哔咔分页接口没有返回 {data_key}")
+            raw_docs = page_data.get("docs")
+            if not isinstance(raw_docs, list):
+                raise RuntimeError("哔咔分页接口没有返回 docs")
+            docs.extend(item for item in raw_docs if isinstance(item, dict))
+            pages_value = page_data.get("pages")
+            total_pages = pages_value if isinstance(pages_value, int) and pages_value > 0 else page
+            if not raw_docs:
+                break
+            page += 1
+        return docs
+
+    def _fetch_pica_comic_detail_sync(self, comic_id: str, token: str) -> dict[str, Any]:
+        payload = self._pica_api_request_sync("GET", f"/comics/{comic_id}", token)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("哔咔详情返回格式不正确")
+        comic = data.get("comic")
+        if not isinstance(comic, dict):
+            raise RuntimeError("哔咔详情没有返回 comic")
+        return comic
+
+    def _download_pica_comic_sync_locked(self, comic_id: str) -> PicaComicDownload:
+        with self._cache_lock:
+            return self._download_pica_comic_sync(comic_id)
+
+    def _load_cached_pica_download_locked(self, comic_id: str) -> PicaComicDownload | None:
+        with self._cache_lock:
+            return _load_cached_pica_download(comic_id)
+
+    def _download_pica_comic_sync(self, comic_id: str) -> PicaComicDownload:
+        cached_download = _load_cached_pica_download(comic_id)
+        if cached_download is not None:
+            logger.info("复用哔咔缓存：%s", comic_id)
+            return cached_download
+
+        token = self._require_pica_token()
+        comic = self._fetch_pica_comic_detail_sync(comic_id, token)
+        title = str(comic.get("title") or f"哔咔 {comic_id}").strip()
+        episodes = self._fetch_pica_paged_docs_sync(f"/comics/{comic_id}/eps", token, "eps")
+        if not episodes:
+            raise RuntimeError("哔咔漫画没有返回分话列表")
+
+        download_dir = _get_pica_download_dir(comic_id)
+        images_dir = download_dir / "originals"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = download_dir / f"bk_{comic_id}.pdf"
+        metadata_path = download_dir / "metadata.json"
+
+        image_headers = {
+            "User-Agent": PICA_USER_AGENT,
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        failures: list[dict[str, Any]] = []
+        image_specs: list[ImageDownloadSpec] = []
+
+        sorted_episodes = sorted(
+            episodes,
+            key=lambda item: item.get("order") if isinstance(item.get("order"), int) else 0,
+        )
+        for episode in sorted_episodes:
+            order = episode.get("order")
+            if not isinstance(order, int):
+                continue
+            episode_title = str(episode.get("title") or f"EP {order}").strip()
+            pages = self._fetch_pica_paged_docs_sync(
+                f"/comics/{comic_id}/order/{order}/pages",
+                token,
+                "pages",
+            )
+            for page_index, page_item in enumerate(pages, 1):
+                media = page_item.get("media")
+                if not isinstance(media, dict):
+                    failures.append({"episode": order, "page": page_index, "error": "missing media"})
+                    continue
+                if len(image_specs) >= self.pica_max_download_pages:
+                    raise RuntimeError(
+                        f"页数超过配置上限 {self.pica_max_download_pages}，已停止下载"
+                    )
+                try:
+                    image_url = _stringify_pica_image_url(media)
+                except Exception as exc:
+                    failures.append({"episode": order, "page": page_index, "error": str(exc)})
+                    continue
+                suffix = _pica_image_suffix(media, image_url)
+                file_path = images_dir / f"{order:03d}_{page_index:04d}{suffix}"
+                image_specs.append(
+                    ImageDownloadSpec(
+                        path=file_path,
+                        url=image_url,
+                        metadata={
+                            "episode_order": order,
+                            "episode_title": episode_title,
+                            "page": page_index,
+                        },
+                    )
+                )
+
+        image_paths, downloaded, image_failures = _download_image_specs(
+            image_specs,
+            image_headers,
+            timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.pica_proxy,
+            retries=self.pica_download_retries,
+            service_label="哔咔图片",
+            proxy_setting="pica.proxy",
+        )
+        failures.extend(image_failures)
+
+        if failures:
+            raise RuntimeError(f"哔咔图片下载不完整：成功 {len(downloaded)} 张，失败 {len(failures)} 张")
+        if not image_paths:
+            raise RuntimeError("哔咔漫画没有可用于生成 PDF 的图片")
+
+        pdf_password = _generate_pdf_password()
+        _create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "id": comic_id,
+                    "title": title,
+                    "episodes": [
+                        {
+                            "order": item.get("order"),
+                            "title": item.get("title"),
+                        }
+                        for item in sorted_episodes
+                    ],
+                    "downloaded": downloaded,
+                    "failures": failures,
+                    "pdf": pdf_path.name,
+                    "pdf_password": pdf_password,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return PicaComicDownload(
+            comic_id=comic_id,
+            title=title,
+            image_paths=image_paths,
+            pdf_path=pdf_path,
+            pdf_password=pdf_password,
+            metadata_path=metadata_path,
+        )
 
     def _search_nhentai_galleries_sync(
         self,
@@ -1863,8 +2309,8 @@ class XxComicGetPlugin(Star):
         if cookie_header:
             image_headers["Cookie"] = cookie_header
 
-        downloaded: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        image_specs: list[ImageDownloadSpec] = []
         for index, item in enumerate(pages, 1):
             if not isinstance(item, dict):
                 failures.append({"number": index, "error": "invalid page item"})
@@ -1876,50 +2322,28 @@ class XxComicGetPlugin(Star):
             suffix = Path(urllib.parse.urlparse(page_path).path).suffix or ".webp"
             file_path = images_dir / f"{index:04d}{suffix}"
             image_url = _join_url(image_base_url, page_path)
-            if file_path.exists() and file_path.stat().st_size > 0:
-                image_paths.append(file_path)
-                downloaded.append(
-                    {
-                        "file": file_path.name,
-                        "bytes": file_path.stat().st_size,
+            image_specs.append(
+                ImageDownloadSpec(
+                    path=file_path,
+                    url=image_url,
+                    metadata={
+                        "number": index,
                         "width": item.get("width"),
                         "height": item.get("height"),
-                        "url": image_url,
-                        "cached": True,
-                    }
+                    },
                 )
-                continue
-            last_error: str | None = None
-            for attempt in range(self.download_retries + 1):
-                try:
-                    body, content_type = _request_bytes(
-                        image_url,
-                        image_headers,
-                        timeout=max(10.0, self.timeout_ms / 1000),
-                        proxy=self.nhentai_proxy,
-                    )
-                    if not content_type.startswith("image/"):
-                        raise RuntimeError(f"返回内容不是图片：{content_type}")
-                    file_path.write_bytes(body)
-                    image_paths.append(file_path)
-                    downloaded.append(
-                        {
-                            "file": file_path.name,
-                            "bytes": len(body),
-                            "width": item.get("width"),
-                            "height": item.get("height"),
-                            "url": image_url,
-                            "cached": False,
-                        }
-                    )
-                    last_error = None
-                    break
-                except (OSError, urllib.error.URLError, RuntimeError) as exc:
-                    last_error = str(exc)
-                    if attempt < self.download_retries:
-                        time.sleep(0.8 * (attempt + 1))
-            if last_error:
-                failures.append({"number": index, "url": image_url, "error": last_error})
+            )
+
+        image_paths, downloaded, image_failures = _download_image_specs(
+            image_specs,
+            image_headers,
+            timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.nhentai_proxy,
+            retries=self.download_retries,
+            service_label="nhentai 原图",
+            proxy_setting="nhentai.proxy",
+        )
+        failures.extend(image_failures)
 
         if failures:
             raise RuntimeError(f"原图下载不完整：成功 {len(downloaded)} 张，失败 {len(failures)} 张")
@@ -1960,6 +2384,7 @@ class XxComicGetPlugin(Star):
                 Plain(
                     f"ID: {download.gallery_id}\n"
                     f"页数: {len(download.image_paths)}\n"
+                    "PDF: 加密\n"
                     f"密码: {download.pdf_password}"
                 ),
                 File(name=f"{download.gallery_id}.pdf", file=str(download.pdf_path)),
@@ -1971,11 +2396,35 @@ class XxComicGetPlugin(Star):
             [
                 Plain(
                     f"ID: {download.comic_id}\n"
+                    "PDF: 加密\n"
                     f"密码: {download.pdf_password}"
                 ),
                 File(name=f"{download.comic_id}.pdf", file=str(download.pdf_path)),
             ]
         )
+
+    def _build_pica_pdf_result(self, event: AstrMessageEvent, download: PicaComicDownload):
+        return event.chain_result(
+            [
+                Plain(
+                    f"ID: {download.comic_id}\n"
+                    f"标题: {download.title}\n"
+                    f"页数: {len(download.image_paths)}\n"
+                    "PDF: 加密\n"
+                    f"密码: {download.pdf_password}"
+                ),
+                File(name=f"bk_{download.comic_id}.pdf", file=str(download.pdf_path)),
+            ]
+        )
+
+    def _build_download_result(self, event: AstrMessageEvent, download):
+        if isinstance(download, GalleryDownload):
+            return self._build_pdf_result(event, download)
+        if isinstance(download, JmComicDownload):
+            return self._build_jmcomic_pdf_result(event, download)
+        if isinstance(download, PicaComicDownload):
+            return self._build_pica_pdf_result(event, download)
+        raise TypeError(f"未知下载结果类型：{type(download).__name__}")
 
     async def terminate(self) -> None:
         if self._cache_cleanup_task is not None:
