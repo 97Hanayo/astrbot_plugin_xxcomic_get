@@ -1244,7 +1244,7 @@ def _format_pica_candidates(
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.1")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.2")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1563,9 +1563,7 @@ class XxComicGetPlugin(Star):
 
         yield event.plain_result(_format_pica_candidates(candidates, query=query))
 
-    @filter.command("对的")
-    @filter.command("JJ")
-    @filter.command("bkdl")
+    @filter.command("对的", alias={"JJ", "bkdl"})
     async def download_by_id(
         self,
         event: AstrMessageEvent,
