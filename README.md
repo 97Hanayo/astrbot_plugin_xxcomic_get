@@ -24,6 +24,20 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 /JJS MANA 无修正
 ```
 
+也可以搜索哔咔漫画，并返回前几条结果：
+
+```text
+/bk MANA 无修正
+```
+
+首次使用哔咔搜索前，需要管理员登录一次哔咔账号：
+
+```text
+/bklogin 用户名 密码
+```
+
+`/bklogin` 仅 AstrBot 管理员可调用，普通成员调用不会响应。插件只缓存哔咔返回的 token，不保存密码。
+
 确认需要下载时，再发送：
 
 ```text
@@ -46,6 +60,8 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 | `nhentai.proxy` | nhentai API 和原图下载代理，例如 `http://127.0.0.1:7890`；出现 SSL EOF 时优先检查此项 | 空 |
 | `nhentai.max_download_pages` | 最大下载页数 | `120` |
 | `nhentai.block_risky_tags` | 是否阻止风险标签自动下载 | `true` |
+| `pica.proxy` | 哔咔 API 代理，例如 `http://127.0.0.1:7890` | 空 |
+| `pica.max_results` | `/bk` 最多返回结果数 | `5` |
 
 SoutuBot 不需要 SauceNAO API Key。
 
@@ -69,6 +85,8 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 - `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果。
 - `/嘻嘻` 会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，返回第一个搜索结果的 ID、标题和链接。
 - `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，只返回第一页第一条结果的标题和 ID，不下载。
+- `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回 ID、标题、作者、分类、标签和页数等摘要，不下载。
+- `/bklogin <用户名> <密码>` 会调用哔咔 `POST /auth/sign-in` 获取 token，仅管理员可调用；token 缓存在插件数据目录的 `accounts/pica_token.json`。
 - `/对的 <id>` 会通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表，下载原图后合成为加密 PDF 发送。
 - 下载图片保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
 - PDF 保存在插件数据目录的 `downloads/{gallery_id}/{gallery_id}.pdf`，文件名使用 nhentai ID。
@@ -79,10 +97,10 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 ## 说明
 
-- 命令入口：`/哈哈`、`/嘻嘻`、`/JJS <文本>`、`/对的 <id>`
+- 命令入口：`/哈哈`、`/嘻嘻`、`/JJS <文本>`、`/JJ <jm id>`、`/bk <文本>`、`/bklogin <用户名> <密码>`、`/对的 <id>`
 - 只处理同一条消息中的第一张图片
 - 搜索服务：SoutuBot
-- 下载来源：nhentai API v2
+- 下载来源：nhentai API v2、jmcomic
 
 ## 禁漫天堂直接下载
 
@@ -124,3 +142,38 @@ ID: jm112233
 ```
 
 这个命令不会下载图片，也不会生成 PDF。
+
+## 哔咔搜索
+
+发送：
+
+```text
+/bk MANA 无修正
+```
+
+插件会调用哔咔站内搜索，默认返回前 5 条结果：
+
+```text
+找到这些哔咔结果：
+1. ...
+ID: ...
+作者: ...
+分类: ...
+标签: ...
+信息: ...
+```
+
+首次搜索前发送：
+
+```text
+/bklogin 用户名 密码
+```
+
+这个登录命令只有 AstrBot 管理员能调用，普通成员调用不会响应。登录成功后插件会缓存 token 到插件数据目录；如果 token 过期，再由管理员重新执行 `/bklogin` 即可。
+
+相关配置：
+
+| 配置项 | 说明 | 默认值 |
+| --- | --- | --- |
+| `pica.proxy` | 哔咔 API 代理，例如 `http://127.0.0.1:7890` | 空 |
+| `pica.max_results` | `/bk` 最多返回结果数 | `5` |

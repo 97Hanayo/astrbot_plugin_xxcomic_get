@@ -119,6 +119,26 @@
       }
     }
   },
+  "pica": {
+    "description": "哔咔搜索设置",
+    "type": "object",
+    "items": {
+      "proxy": {
+        "description": "哔咔代理",
+        "type": "string",
+        "hint": "可选。当前运行环境无法直连哔咔 API 时填写 HTTP/HTTPS 代理，例如 http://127.0.0.1:7890。",
+        "default": ""
+      },
+      "max_results": {
+        "description": "哔咔最多返回结果数",
+        "type": "int",
+        "hint": "/bk 文本搜索最多返回几条结果。",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      }
+    }
+  },
   "cache": {
     "description": "缓存清理设置",
     "type": "object",

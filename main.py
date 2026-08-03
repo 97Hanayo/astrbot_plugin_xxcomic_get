@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -12,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,6 +31,17 @@ SOUTUBOT_HOME_URL = "https://soutubot.moe/"
 NHENTAI_API_URL = "https://nhentai.net/api/v2/galleries/{gallery_id}"
 NHENTAI_SEARCH_URL = "https://nhentai.net/api/v2/search"
 NHENTAI_CDN_URL = "https://nhentai.net/api/v2/cdn"
+PICA_API_BASE_URL = "https://picaapi.picacomic.com/"
+PICA_API_KEY = "C69BAF41DA5ABD1FFEDC6D2FEA56B"
+PICA_SIGNATURE_KEY = "~d}$Q7$eIni=V)9\\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn"
+PICA_ACCEPT = "application/vnd.picacomic.com.v1+json"
+PICA_CHANNEL = "2"
+PICA_VERSION = "2.2.1.2.3.3"
+PICA_UUID = "defaultUuid"
+PICA_PLATFORM = "android"
+PICA_BUILD_VERSION = "44"
+PICA_USER_AGENT = "okhttp/3.8.1"
+PICA_IMAGE_QUALITY = "original"
 DEFAULT_TIMEOUT_MS = 60000
 CACHE_CLEANUP_STATE_FILE = "cache_cleanup_state.json"
 DEFAULT_CACHE_CLEANUP_HOUR = 2
@@ -96,6 +110,18 @@ class JmComicCandidate:
     title: str
 
 
+@dataclass(slots=True)
+class PicaComicCandidate:
+    comic_id: str
+    title: str
+    author: str
+    categories: list[str]
+    tags: list[str]
+    pages_count: int | None
+    likes_count: int | None
+    finished: bool | None
+
+
 class EmptySearchResultError(RuntimeError):
     pass
 
@@ -123,6 +149,40 @@ def _get_download_dir(gallery_id: str) -> Path:
 
 def _get_cache_cleanup_state_file() -> Path:
     return _get_data_dir() / CACHE_CLEANUP_STATE_FILE
+
+
+def _get_pica_token_file() -> Path:
+    account_dir = _get_data_dir() / "accounts"
+    account_dir.mkdir(parents=True, exist_ok=True)
+    return account_dir / "pica_token.json"
+
+
+def _read_pica_token() -> str:
+    token_file = _get_pica_token_file()
+    if not token_file.exists():
+        return ""
+    try:
+        data = json.loads(token_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("token") or "").strip()
+
+
+def _write_pica_token(token: str) -> None:
+    token_file = _get_pica_token_file()
+    token_file.write_text(
+        json.dumps(
+            {
+                "token": token,
+                "issued_at": int(time.time()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _read_cache_cleanup_state() -> dict[str, Any]:
@@ -412,6 +472,54 @@ def _build_url_opener(proxy: str | None = None) -> urllib.request.OpenerDirector
     )
 
 
+def _pica_api_url(endpoint: str) -> str:
+    return urllib.parse.urljoin(PICA_API_BASE_URL, endpoint.lstrip("/"))
+
+
+def _pica_signature_endpoint(endpoint: str, query: dict[str, Any] | None = None) -> str:
+    fixed_endpoint = endpoint.lstrip("/")
+    if query:
+        query_string = "&".join(f"{key}={value}" for key, value in query.items())
+        if query_string:
+            fixed_endpoint = f"{fixed_endpoint}?{query_string}"
+    return fixed_endpoint
+
+
+def _build_pica_headers(
+    method: str,
+    endpoint: str,
+    query: dict[str, Any] | None = None,
+    token: str | None = None,
+) -> dict[str, str]:
+    timestamp = str(int(time.time()))
+    nonce = uuid.uuid4().hex
+    signature_endpoint = _pica_signature_endpoint(endpoint, query)
+    signing_text = f"{signature_endpoint}{timestamp}{nonce}{method}{PICA_API_KEY}".lower()
+    signature = hmac.new(
+        PICA_SIGNATURE_KEY.encode("utf-8"),
+        signing_text.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    headers = {
+        "time": timestamp,
+        "nonce": nonce,
+        "signature": signature,
+        "accept": PICA_ACCEPT,
+        "api-key": PICA_API_KEY,
+        "app-channel": PICA_CHANNEL,
+        "app-version": PICA_VERSION,
+        "app-uuid": PICA_UUID,
+        "app-platform": PICA_PLATFORM,
+        "app-build-version": PICA_BUILD_VERSION,
+        "image-quality": PICA_IMAGE_QUALITY,
+        "user-agent": PICA_USER_AGENT,
+        "content-type": "application/json; charset=UTF-8",
+    }
+    if token:
+        headers["authorization"] = token
+    return headers
+
+
 def _is_ssl_unexpected_eof(exc: BaseException) -> bool:
     current: BaseException | None = exc
     while current is not None:
@@ -441,6 +549,49 @@ def _request_bytes(
                 "代理没有生效或 TLS 被中间网络拦截；请配置 nhentai.proxy 后重试。"
             ) from exc
         raise
+
+
+def _request_json(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    timeout: float,
+    proxy: str | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    body_bytes = None
+    if json_body is not None:
+        body_bytes = json.dumps(json_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
+    try:
+        with _build_url_opener(proxy).open(request, timeout=timeout) as response:
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            payload = json.loads(error_body)
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            message = str(payload.get("message") or payload.get("error") or exc.reason)
+            detail = str(payload.get("detail") or "").strip()
+            suffix = f"：{detail}" if detail else ""
+            raise RuntimeError(f"哔咔 HTTP {exc.code}: {message}{suffix}") from exc
+        raise RuntimeError(f"哔咔 HTTP {exc.code}: {exc.reason}") from exc
+    except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
+        raise RuntimeError(f"哔咔 API 请求失败：{exc}") from exc
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("哔咔 API 没有返回可解析 JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("哔咔 API 返回格式不正确")
+    if isinstance(payload.get("error"), str):
+        detail = str(payload.get("detail") or "").strip()
+        suffix = f"：{detail}" if detail else ""
+        raise RuntimeError(f"{payload.get('message') or payload['error']}{suffix}")
+    return payload
 
 
 def _generate_pdf_password(length: int = 6) -> str:
@@ -663,7 +814,32 @@ def _format_jmcomic_candidate(candidate: JmComicCandidate) -> str:
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic", "1.1.3")
+def _format_pica_candidates(candidates: list[PicaComicCandidate]) -> str:
+    lines = ["找到这些哔咔结果："]
+    for index, candidate in enumerate(candidates, 1):
+        lines.append(f"{index}. {candidate.title}")
+        lines.append(f"ID: {candidate.comic_id}")
+        if candidate.author:
+            lines.append(f"作者: {candidate.author}")
+        if candidate.categories:
+            lines.append(f"分类: {' / '.join(candidate.categories[:4])}")
+        if candidate.tags:
+            lines.append(f"标签: {' / '.join(candidate.tags[:6])}")
+        details: list[str] = []
+        if candidate.pages_count is not None:
+            details.append(f"{candidate.pages_count} 页")
+        if candidate.likes_count is not None:
+            details.append(f"{candidate.likes_count} 喜欢")
+        if candidate.finished is not None:
+            details.append("已完结" if candidate.finished else "连载中")
+        if details:
+            lines.append("信息: " + "，".join(details))
+        if index != len(candidates):
+            lines.append("")
+    return "\n".join(lines)
+
+
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.0")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -731,6 +907,13 @@ class XxComicGetPlugin(Star):
         self.jmcomic_domains = configured_domains or list(DEFAULT_JMCOMIC_DOMAINS)
         self.jmcomic_proxy = str(_get_config_value(self.config, "jmcomic.proxy", "") or "").strip()
         self.jmcomic_cookies = _get_config_value(self.config, "jmcomic.cookies", "")
+        self.pica_proxy = str(_get_config_value(self.config, "pica.proxy", "") or "").strip()
+        self.pica_max_results = _coerce_int(
+            _get_config_value(self.config, "pica.max_results", 5),
+            default=5,
+            min_value=1,
+            max_value=10,
+        )
         self.cache_cleanup_enabled = _coerce_bool(
             _get_config_value(self.config, "cache.cleanup_enabled", True),
             True,
@@ -793,6 +976,12 @@ class XxComicGetPlugin(Star):
         if not api_key:
             raise RuntimeError("未配置api")
         return api_key
+
+    def _require_pica_token(self) -> str:
+        token = _read_pica_token()
+        if not token:
+            raise RuntimeError("未登录哔咔，请先让管理员发送 /bklogin <用户名> <密码>")
+        return token
 
     @filter.command("哈哈")
     async def search_comic(self, event: AstrMessageEvent):
@@ -887,6 +1076,46 @@ class XxComicGetPlugin(Star):
             return
 
         yield event.plain_result(_format_jmcomic_candidate(candidate))
+
+    @filter.command("bklogin")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def login_pica(self, event: AstrMessageEvent):
+        """管理员登录哔咔并缓存 token"""
+        self._start_cache_cleanup_task()
+        text = _extract_command_text(getattr(event, "message_str", ""), "bklogin")
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2:
+            yield event.plain_result("请发送：/bklogin <用户名> <密码>")
+            return
+        email, password = parts
+        try:
+            await self._login_pica(email, password)
+        except Exception as exc:
+            logger.exception("哔咔登录失败")
+            yield event.plain_result(f"登录失败：{exc}")
+            return
+        yield event.plain_result("哔咔登录成功，已缓存 token。")
+
+    @filter.command("bk")
+    async def search_pica_text(self, event: AstrMessageEvent):
+        """按文本搜索哔咔漫画"""
+        self._start_cache_cleanup_task()
+        query = _extract_command_text(getattr(event, "message_str", ""), "bk")
+        if not query:
+            yield event.plain_result("请发送：/bk <搜索文本>")
+            return
+
+        try:
+            candidates = await self._search_pica_comics(query)
+        except EmptySearchResultError:
+            yield event.plain_result("空的。")
+            return
+        except Exception as exc:
+            logger.exception("哔咔文本搜索失败")
+            yield event.plain_result(f"搜索失败：{exc}")
+            return
+
+        yield event.plain_result(_format_pica_candidates(candidates))
 
     @filter.command("对的")
     async def confirm_download_nhentai(self, event: AstrMessageEvent):
@@ -1093,6 +1322,108 @@ class XxComicGetPlugin(Star):
 
     async def _search_jmcomic_first_album(self, query: str) -> JmComicCandidate:
         return await asyncio.to_thread(self._search_jmcomic_first_album_sync_locked, query)
+
+    async def _login_pica(self, email: str, password: str) -> None:
+        await asyncio.to_thread(self._login_pica_sync, email, password)
+
+    async def _search_pica_comics(self, query: str) -> list[PicaComicCandidate]:
+        return await asyncio.to_thread(self._search_pica_comics_sync, query)
+
+    def _login_pica_sync(self, email: str, password: str) -> None:
+        normalized_email = str(email or "").strip()
+        normalized_password = str(password or "").strip()
+        if not normalized_email or not normalized_password:
+            raise RuntimeError("用户名和密码不能为空")
+        endpoint = "/auth/sign-in"
+        method = "POST"
+        payload = _request_json(
+            method,
+            _pica_api_url(endpoint),
+            _build_pica_headers(method, endpoint),
+            timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.pica_proxy,
+            json_body={
+                "email": normalized_email,
+                "password": normalized_password,
+            },
+        )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("哔咔登录返回格式不正确")
+        token = str(data.get("token") or "").strip()
+        if not token:
+            raise RuntimeError("哔咔登录没有返回 token")
+        _write_pica_token(token)
+
+    def _search_pica_comics_sync(self, query: str) -> list[PicaComicCandidate]:
+        search_query = query.strip()
+        if not search_query:
+            raise RuntimeError("搜索文本为空")
+        token = self._require_pica_token()
+        endpoint = "/comics/advanced-search"
+        method = "POST"
+        query_params = {"page": 1}
+        payload = _request_json(
+            method,
+            f"{_pica_api_url(endpoint)}?{urllib.parse.urlencode(query_params)}",
+            _build_pica_headers(method, endpoint, query_params, token=token),
+            timeout=max(10.0, self.timeout_ms / 1000),
+            proxy=self.pica_proxy,
+            json_body={
+                "keyword": search_query,
+                "categories": [],
+                "s": "ua",
+            },
+        )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("哔咔搜索返回格式不正确")
+        comics = data.get("comics")
+        if not isinstance(comics, dict):
+            raise RuntimeError("哔咔搜索没有返回漫画列表")
+        docs = comics.get("docs")
+        if not isinstance(docs, list) or not docs:
+            raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
+
+        candidates: list[PicaComicCandidate] = []
+        for item in docs:
+            if not isinstance(item, dict):
+                continue
+            comic_id = str(item.get("_id") or item.get("id") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if not comic_id or not title:
+                continue
+            raw_categories = item.get("categories")
+            categories = [
+                str(value).strip()
+                for value in raw_categories
+                if str(value or "").strip()
+            ] if isinstance(raw_categories, list) else []
+            raw_tags = item.get("tags")
+            tags = [
+                str(value).strip()
+                for value in raw_tags
+                if str(value or "").strip()
+            ] if isinstance(raw_tags, list) else []
+            pages_count = item.get("pagesCount")
+            likes_count = item.get("likesCount")
+            candidates.append(
+                PicaComicCandidate(
+                    comic_id=comic_id,
+                    title=title,
+                    author=str(item.get("author") or "").strip(),
+                    categories=categories,
+                    tags=tags,
+                    pages_count=pages_count if isinstance(pages_count, int) else None,
+                    likes_count=likes_count if isinstance(likes_count, int) else None,
+                    finished=item.get("finished") if isinstance(item.get("finished"), bool) else None,
+                )
+            )
+            if len(candidates) >= self.pica_max_results:
+                break
+        if not candidates:
+            raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
+        return candidates
 
     def _search_nhentai_first_gallery_sync(self, query: str) -> NhentaiCandidate:
         search_query = query.strip()
