@@ -10,6 +10,7 @@ import secrets
 import shutil
 import ssl
 import string
+import sys
 import threading
 import time
 import urllib.error
@@ -25,6 +26,10 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import File, Image, Plain
 from astrbot.api.star import Context, Star, StarTools, register
+
+from services import jmcomic as jmcomic_service
+from services import nhentai as nhentai_service
+from services import pica as pica_service
 
 
 PLUGIN_NAME = "astrbot_plugin_xxcomic_get"
@@ -158,6 +163,11 @@ class PicaComicCandidate:
 
 class EmptySearchResultError(RuntimeError):
     pass
+
+
+def _service_core() -> Any:
+    """Return the shared helper module used by source services."""
+    return sys.modules[__name__]
 
 
 def _get_data_dir() -> Path:
@@ -1214,7 +1224,7 @@ def _format_pica_candidates(
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.4")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.0")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1800,110 +1810,14 @@ class XxComicGetPlugin(Star):
         return await asyncio.to_thread(self._search_pica_comics_sync, query, limit)
 
     def _login_pica_sync(self, email: str, password: str) -> None:
-        normalized_email = str(email or "").strip()
-        normalized_password = str(password or "").strip()
-        if not normalized_email or not normalized_password:
-            raise RuntimeError("用户名和密码不能为空")
-        endpoint = "/auth/sign-in"
-        method = "POST"
-        payload = _request_json(
-            method,
-            _pica_api_url(endpoint),
-            _build_pica_headers(method, endpoint),
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.pica_proxy,
-            json_body={
-                "email": normalized_email,
-                "password": normalized_password,
-            },
-        )
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise RuntimeError("哔咔登录返回格式不正确")
-        token = str(data.get("token") or "").strip()
-        if not token:
-            raise RuntimeError("哔咔登录没有返回 token")
-        _write_pica_token(token)
+        pica_service.login(self, email, password, _service_core())
 
     def _search_pica_comics_sync(
         self,
         query: str,
         limit: int | None = None,
     ) -> list[PicaComicCandidate]:
-        search_query = query.strip()
-        if not search_query:
-            raise RuntimeError("搜索文本为空")
-        max_results = _coerce_int(
-            limit if limit is not None else self.pica_max_results,
-            default=self.pica_max_results,
-            min_value=1,
-            max_value=10,
-        )
-        token = self._require_pica_token()
-        endpoint = "/comics/advanced-search"
-        method = "POST"
-        query_params = {"page": 1}
-        payload = _request_json(
-            method,
-            f"{_pica_api_url(endpoint)}?{urllib.parse.urlencode(query_params)}",
-            _build_pica_headers(method, endpoint, query_params, token=token),
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.pica_proxy,
-            json_body={
-                "keyword": search_query,
-                "categories": [],
-                "s": "ua",
-            },
-        )
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise RuntimeError("哔咔搜索返回格式不正确")
-        comics = data.get("comics")
-        if not isinstance(comics, dict):
-            raise RuntimeError("哔咔搜索没有返回漫画列表")
-        docs = comics.get("docs")
-        if not isinstance(docs, list) or not docs:
-            raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
-
-        candidates: list[PicaComicCandidate] = []
-        for item in docs:
-            if not isinstance(item, dict):
-                continue
-            comic_id = str(item.get("_id") or item.get("id") or "").strip()
-            title = str(item.get("title") or "").strip()
-            if not comic_id or not title:
-                continue
-            raw_categories = item.get("categories")
-            categories = [
-                str(value).strip()
-                for value in raw_categories
-                if str(value or "").strip()
-            ] if isinstance(raw_categories, list) else []
-            raw_tags = item.get("tags")
-            tags = [
-                str(value).strip()
-                for value in raw_tags
-                if str(value or "").strip()
-            ] if isinstance(raw_tags, list) else []
-            pages_count = item.get("pagesCount")
-            likes_count = item.get("likesCount")
-            candidates.append(
-                PicaComicCandidate(
-                    comic_id=comic_id,
-                    title=title,
-                    author=str(item.get("author") or "").strip(),
-                    categories=categories,
-                    tags=tags,
-                    pages_count=pages_count if isinstance(pages_count, int) else None,
-                    likes_count=likes_count if isinstance(likes_count, int) else None,
-                    finished=item.get("finished") if isinstance(item.get("finished"), bool) else None,
-                )
-            )
-            if len(candidates) >= max_results:
-                break
-        if not candidates:
-            raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
-        return candidates
+        return pica_service.search_comics(self, query, limit, _service_core())
 
     def _pica_api_request_sync(
         self,
@@ -1913,16 +1827,14 @@ class XxComicGetPlugin(Star):
         query: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        url = _pica_api_url(endpoint)
-        if query:
-            url = f"{url}?{urllib.parse.urlencode(query)}"
-        return _request_json(
+        return pica_service.api_request(
+            self,
             method,
-            url,
-            _build_pica_headers(method, endpoint, query, token=token),
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.pica_proxy,
-            json_body=json_body,
+            endpoint,
+            token,
+            query,
+            json_body,
+            _service_core(),
         )
 
     def _fetch_pica_paged_docs_sync(
@@ -1931,42 +1843,21 @@ class XxComicGetPlugin(Star):
         token: str,
         data_key: str,
     ) -> list[dict[str, Any]]:
-        docs: list[dict[str, Any]] = []
-        page = 1
-        total_pages = 1
-        while page <= total_pages:
-            payload = self._pica_api_request_sync(
-                "GET",
-                endpoint,
-                token,
-                query={"page": page},
-            )
-            data = payload.get("data")
-            if not isinstance(data, dict):
-                raise RuntimeError("哔咔分页接口返回格式不正确")
-            page_data = data.get(data_key)
-            if not isinstance(page_data, dict):
-                raise RuntimeError(f"哔咔分页接口没有返回 {data_key}")
-            raw_docs = page_data.get("docs")
-            if not isinstance(raw_docs, list):
-                raise RuntimeError("哔咔分页接口没有返回 docs")
-            docs.extend(item for item in raw_docs if isinstance(item, dict))
-            pages_value = page_data.get("pages")
-            total_pages = pages_value if isinstance(pages_value, int) and pages_value > 0 else page
-            if not raw_docs:
-                break
-            page += 1
-        return docs
+        return pica_service.fetch_paged_docs(
+            self,
+            endpoint,
+            token,
+            data_key,
+            _service_core(),
+        )
 
     def _fetch_pica_comic_detail_sync(self, comic_id: str, token: str) -> dict[str, Any]:
-        payload = self._pica_api_request_sync("GET", f"/comics/{comic_id}", token)
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise RuntimeError("哔咔详情返回格式不正确")
-        comic = data.get("comic")
-        if not isinstance(comic, dict):
-            raise RuntimeError("哔咔详情没有返回 comic")
-        return comic
+        return pica_service.fetch_comic_detail(
+            self,
+            comic_id,
+            token,
+            _service_core(),
+        )
 
     def _download_pica_comic_sync_locked(self, comic_id: str) -> PicaComicDownload:
         with self._cache_lock:
@@ -1977,175 +1868,19 @@ class XxComicGetPlugin(Star):
             return _load_cached_pica_download(comic_id)
 
     def _download_pica_comic_sync(self, comic_id: str) -> PicaComicDownload:
-        cached_download = _load_cached_pica_download(comic_id)
-        if cached_download is not None:
-            logger.info("复用哔咔缓存：%s", comic_id)
-            return cached_download
-
-        token = self._require_pica_token()
-        comic = self._fetch_pica_comic_detail_sync(comic_id, token)
-        title = str(comic.get("title") or f"哔咔 {comic_id}").strip()
-        episodes = self._fetch_pica_paged_docs_sync(f"/comics/{comic_id}/eps", token, "eps")
-        if not episodes:
-            raise RuntimeError("哔咔漫画没有返回分话列表")
-
-        download_dir = _get_pica_download_dir(comic_id)
-        images_dir = download_dir / "originals"
-        images_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = download_dir / f"bk_{comic_id}.pdf"
-        metadata_path = download_dir / "metadata.json"
-
-        image_headers = {
-            "User-Agent": PICA_USER_AGENT,
-            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        }
-        failures: list[dict[str, Any]] = []
-        image_specs: list[ImageDownloadSpec] = []
-
-        sorted_episodes = sorted(
-            episodes,
-            key=lambda item: item.get("order") if isinstance(item.get("order"), int) else 0,
-        )
-        for episode in sorted_episodes:
-            order = episode.get("order")
-            if not isinstance(order, int):
-                continue
-            episode_title = str(episode.get("title") or f"EP {order}").strip()
-            pages = self._fetch_pica_paged_docs_sync(
-                f"/comics/{comic_id}/order/{order}/pages",
-                token,
-                "pages",
-            )
-            for page_index, page_item in enumerate(pages, 1):
-                media = page_item.get("media")
-                if not isinstance(media, dict):
-                    failures.append({"episode": order, "page": page_index, "error": "missing media"})
-                    continue
-                if len(image_specs) >= self.pica_max_download_pages:
-                    raise RuntimeError(
-                        f"页数超过配置上限 {self.pica_max_download_pages}，已停止下载"
-                    )
-                try:
-                    image_url = _stringify_pica_image_url(media)
-                except Exception as exc:
-                    failures.append({"episode": order, "page": page_index, "error": str(exc)})
-                    continue
-                suffix = _pica_image_suffix(media, image_url)
-                file_path = images_dir / f"{order:03d}_{page_index:04d}{suffix}"
-                image_specs.append(
-                    ImageDownloadSpec(
-                        path=file_path,
-                        url=image_url,
-                        metadata={
-                            "episode_order": order,
-                            "episode_title": episode_title,
-                            "page": page_index,
-                        },
-                    )
-                )
-
-        image_paths, downloaded, image_failures = _download_image_specs(
-            image_specs,
-            image_headers,
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.pica_proxy,
-            retries=self.pica_download_retries,
-            service_label="哔咔图片",
-            proxy_setting="pica.proxy",
-        )
-        failures.extend(image_failures)
-
-        if failures:
-            raise RuntimeError(f"哔咔图片下载不完整：成功 {len(downloaded)} 张，失败 {len(failures)} 张")
-        if not image_paths:
-            raise RuntimeError("哔咔漫画没有可用于生成 PDF 的图片")
-
-        pdf_password = _generate_pdf_password()
-        _create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "id": comic_id,
-                    "title": title,
-                    "episodes": [
-                        {
-                            "order": item.get("order"),
-                            "title": item.get("title"),
-                        }
-                        for item in sorted_episodes
-                    ],
-                    "downloaded": downloaded,
-                    "failures": failures,
-                    "pdf": pdf_path.name,
-                    "pdf_password": pdf_password,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return PicaComicDownload(
-            comic_id=comic_id,
-            title=title,
-            image_paths=image_paths,
-            pdf_path=pdf_path,
-            pdf_password=pdf_password,
-            metadata_path=metadata_path,
-        )
+        return pica_service.download_comic(self, comic_id, _service_core())
 
     def _search_nhentai_galleries_sync(
         self,
         query: str,
         limit: int = TEXT_SEARCH_RESULT_LIMIT,
     ) -> list[NhentaiCandidate]:
-        search_query = query.strip()
-        if not search_query:
-            raise RuntimeError("搜索文本为空")
-        max_results = _coerce_int(limit, default=TEXT_SEARCH_RESULT_LIMIT, min_value=1, max_value=10)
-        api_key = self._require_nhentai_api_key()
-
-        url = (
-            f"{NHENTAI_SEARCH_URL}?"
-            f"{urllib.parse.urlencode({'query': search_query, 'sort': 'date', 'page': 1})}"
+        return nhentai_service.search_galleries(
+            self,
+            query,
+            limit,
+            _service_core(),
         )
-        cookie_header = _cookie_header_from_setting(self.nhentai_cookies)
-        headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Accept": "application/json,text/plain,*/*",
-            "Referer": "https://nhentai.net/search/",
-        }
-        if cookie_header:
-            headers["Cookie"] = cookie_header
-        _add_nhentai_auth_header(headers, api_key)
-
-        payload = _load_json_url(
-            url,
-            headers,
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.nhentai_proxy,
-        )
-        raw_results = payload.get("result") or payload.get("results") or payload.get("data")
-        if not isinstance(raw_results, list) or not raw_results:
-            raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
-
-        candidates: list[NhentaiCandidate] = []
-        for item in raw_results:
-            if not isinstance(item, dict):
-                continue
-            gallery_id = str(item.get("id") or item.get("gallery_id") or "").strip()
-            if not gallery_id:
-                continue
-            candidates.append(
-                NhentaiCandidate(
-                    gallery_id=gallery_id,
-                    title=_extract_nhentai_title(item, f"nhentai {gallery_id}"),
-                )
-            )
-            if len(candidates) >= max_results:
-                break
-        if not candidates:
-            raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
-        return candidates
 
     def _search_jmcomic_albums_sync_locked(
         self,
@@ -2160,68 +1895,12 @@ class XxComicGetPlugin(Star):
         query: str,
         limit: int = TEXT_SEARCH_RESULT_LIMIT,
     ) -> list[JmComicCandidate]:
-        search_query = query.strip()
-        if not search_query:
-            raise RuntimeError("搜索文本为空")
-        max_results = _coerce_int(limit, default=TEXT_SEARCH_RESULT_LIMIT, min_value=1, max_value=10)
-
-        try:
-            from jmcomic import create_option_by_file
-        except Exception as exc:
-            raise RuntimeError("当前环境缺少 jmcomic，请安装插件依赖后重试") from exc
-
-        option_path = _get_data_dir() / "jmcomic_search_option.yml"
-        option_lines = [
-            "client:",
-            "  impl: html",
-            "  domain:",
-            "    html:",
-            *[f"      - {domain}" for domain in self.jmcomic_domains],
-        ]
-        if self.jmcomic_proxy:
-            option_lines.extend(
-                [
-                    "  postman:",
-                    "    meta_data:",
-                    f"      proxies: {self.jmcomic_proxy}",
-                ]
-            )
-        option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
-
-        option = create_option_by_file(str(option_path))
-        cookies = _cookie_dict_from_setting(self.jmcomic_cookies)
-        if cookies:
-            option.update_cookies(cookies)
-
-        try:
-            page = option.new_jm_client().search_site(search_query=search_query, page=1)
-        except Exception as exc:
-            error_text = str(exc)
-            if "/setting" in error_text or "请求重试全部失败" in error_text:
-                domains = ", ".join(self.jmcomic_domains)
-                proxy_hint = "；如果运行环境需要代理，请配置 jmcomic.proxy，例如 http://127.0.0.1:7890"
-                raise RuntimeError(
-                    f"禁漫域名初始化失败，已尝试这些域名：{domains}{proxy_hint}"
-                ) from exc
-            raise
-
-        candidates: list[JmComicCandidate] = []
-        for album_id, title in page:
-            comic_id = str(album_id).strip()
-            if not comic_id:
-                continue
-            normalized_id = f"jm{comic_id}" if comic_id.isdigit() else comic_id
-            candidates.append(
-                JmComicCandidate(
-                    comic_id=normalized_id,
-                    title=str(title or normalized_id).strip(),
-                )
-            )
-            if len(candidates) >= max_results:
-                break
-        if candidates:
-            return candidates
-        raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
+        return jmcomic_service.search_albums(
+            self,
+            query,
+            limit,
+            _service_core(),
+        )
 
     def _download_nhentai_gallery_sync_locked(self, gallery_id: str) -> GalleryDownload:
         with self._cache_lock:
@@ -2240,279 +1919,17 @@ class XxComicGetPlugin(Star):
             return _load_cached_jmcomic_download(comic_id)
 
     def _download_jmcomic_album_sync(self, comic_id: str) -> JmComicDownload:
-        cached_download = _load_cached_jmcomic_download(comic_id)
-        if cached_download is not None:
-            logger.info("复用 jmcomic 缓存：%s", comic_id)
-            return cached_download
-
-        try:
-            from jmcomic import Feature, create_option_by_file, download_album
-        except Exception as exc:
-            raise RuntimeError("当前环境缺少 jmcomic，请安装插件依赖后重试") from exc
-
-        numeric_id = _jmcomic_numeric_id(comic_id)
-        download_dir = _get_download_dir(comic_id)
-        jm_work_dir = download_dir / "jmcomic"
-        pdf_output_dir = download_dir / "pdf"
-        metadata_path = download_dir / "metadata.json"
-        pdf_path = download_dir / f"{comic_id}.pdf"
-        _clear_directory_contents(jm_work_dir)
-        _clear_directory_contents(pdf_output_dir)
-        jm_work_dir.mkdir(parents=True, exist_ok=True)
-        pdf_output_dir.mkdir(parents=True, exist_ok=True)
-
-        option_path = download_dir / "jmcomic_option.yml"
-        option_lines = [
-            "dir_rule:",
-            f"  base_dir: {jm_work_dir.as_posix()}",
-            "  rule: Bd / {Aid}",
-            "client:",
-            "  impl: html",
-            "  domain:",
-            "    html:",
-            *[f"      - {domain}" for domain in self.jmcomic_domains],
-        ]
-        if self.jmcomic_proxy:
-            option_lines.extend(
-                [
-                    "  postman:",
-                    "    meta_data:",
-                    f"      proxies: {self.jmcomic_proxy}",
-                ]
-            )
-        option_lines.extend(
-            [
-                "download:",
-                "  image:",
-                "    decode: true",
-                "  threading:",
-                "    image: 10",
-                "    photo: 4",
-            ]
-        )
-        option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
-
-        pdf_password = _generate_pdf_password()
-        option = create_option_by_file(str(option_path))
-        cookies = _cookie_dict_from_setting(self.jmcomic_cookies)
-        if cookies:
-            option.update_cookies(cookies)
-
-        try:
-            download_album(
-                numeric_id,
-                option,
-                extra=Feature.export_pdf(
-                    pdf_dir=str(pdf_output_dir),
-                    filename_rule="Aid",
-                    encrypt={"password": pdf_password},
-                    delete_original_file=False,
-                ),
-                check_exception=True,
-            )
-        except Exception as exc:
-            error_text = str(exc)
-            if "/setting" in error_text or "请求重试全部失败" in error_text:
-                domains = ", ".join(self.jmcomic_domains)
-                proxy_hint = "；如果运行环境需要代理，请配置 jmcomic.proxy，例如 http://127.0.0.1:7890"
-                raise RuntimeError(
-                    f"禁漫域名初始化失败，已尝试这些域名：{domains}{proxy_hint}"
-                ) from exc
-            raise
-
-        pdf_created_by = "jmcomic_export"
-        generated_pdfs = sorted(
-            (path for path in pdf_output_dir.glob("*.pdf") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        if not generated_pdfs:
-            generated_pdfs = sorted(
-                (path for path in download_dir.rglob("*.pdf") if path.is_file()),
-                key=lambda path: path.stat().st_mtime,
-                reverse=True,
-            )
-        if not generated_pdfs:
-            image_paths = _collect_image_files(jm_work_dir)
-            if not image_paths:
-                raise RuntimeError("jmcomic 下载完成后没有找到导出的 PDF，也没有找到可用于合成 PDF 的图片")
-            _create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
-            generated_pdf_name = pdf_path.name
-            pdf_created_by = "plugin_fallback"
-        else:
-            generated_pdf = generated_pdfs[0]
-            generated_pdf_name = generated_pdf.name
-            if pdf_path.exists():
-                pdf_path.unlink()
-            shutil.move(str(generated_pdf), str(pdf_path))
-        if not pdf_path.exists() or pdf_path.stat().st_size <= 0:
-            raise RuntimeError("jmcomic PDF 重命名后文件不可用")
-        _ensure_pdf_encrypted(pdf_path, pdf_password)
-
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "id": comic_id,
-                    "jm_album_id": numeric_id,
-                    "pdf": pdf_path.name,
-                    "pdf_password": pdf_password,
-                    "source_pdf": generated_pdf_name,
-                    "pdf_created_by": pdf_created_by,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return JmComicDownload(
-            comic_id=comic_id,
-            pdf_path=pdf_path,
-            pdf_password=pdf_password,
-            metadata_path=metadata_path,
+        return jmcomic_service.download_album(
+            self,
+            comic_id,
+            _service_core(),
         )
 
     def _download_nhentai_gallery_sync(self, gallery_id: str) -> GalleryDownload:
-        cached_download = _load_cached_gallery_download(gallery_id)
-        if cached_download is not None:
-            logger.info("复用 nhentai 缓存：%s", gallery_id)
-            return cached_download
-
-        api_key = self._require_nhentai_api_key()
-        gallery_dir = _get_download_dir(gallery_id)
-        images_dir = gallery_dir / "originals"
-        images_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = gallery_dir / f"{gallery_id}.pdf"
-        metadata_path = gallery_dir / "metadata.json"
-
-        cookie_header = _cookie_header_from_setting(self.nhentai_cookies)
-        headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Accept": "application/json,text/plain,*/*",
-            "Referer": f"https://nhentai.net/g/{gallery_id}/",
-        }
-        if cookie_header:
-            headers["Cookie"] = cookie_header
-        _add_nhentai_auth_header(headers, api_key)
-
-        metadata = _load_json_url(
-            NHENTAI_API_URL.format(gallery_id=gallery_id),
-            headers,
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.nhentai_proxy,
-        )
-        cdn_config = _load_json_url(
-            NHENTAI_CDN_URL,
-            headers,
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.nhentai_proxy,
-        )
-        image_servers = cdn_config.get("image_servers")
-        if not isinstance(image_servers, list) or not image_servers:
-            raise RuntimeError("nhentai API 没有返回可用图片 CDN")
-        image_base_url = str(image_servers[0] or "").strip()
-        if not image_base_url:
-            raise RuntimeError("nhentai API 返回的图片 CDN 为空")
-
-        pages = metadata.get("pages")
-        if not isinstance(pages, list) or not pages:
-            raise RuntimeError("nhentai API 没有返回可下载页列表")
-        if len(pages) > self.max_download_pages:
-            raise RuntimeError(
-                f"页数 {len(pages)} 超过配置上限 {self.max_download_pages}，已停止下载"
-            )
-
-        tags = metadata.get("tags") if isinstance(metadata.get("tags"), list) else []
-        tag_slugs = {
-            str(tag.get("slug") or tag.get("name") or "").strip().lower()
-            for tag in tags
-            if isinstance(tag, dict)
-        }
-        if self.block_risky_tags and tag_slugs.intersection(BLOCKED_NHENTAI_TAGS):
-            raise RuntimeError("命中受限标签，已停止自动下载")
-
-        title_info = metadata.get("title") if isinstance(metadata.get("title"), dict) else {}
-        title = (
-            str(title_info.get("english") or "").strip()
-            or str(title_info.get("pretty") or "").strip()
-            or f"nhentai {gallery_id}"
-        )
-        media_id = str(metadata.get("media_id") or "")
-        image_paths: list[Path] = []
-        image_headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-            "Referer": f"https://nhentai.net/g/{gallery_id}/",
-        }
-        if cookie_header:
-            image_headers["Cookie"] = cookie_header
-
-        failures: list[dict[str, Any]] = []
-        image_specs: list[ImageDownloadSpec] = []
-        for index, item in enumerate(pages, 1):
-            if not isinstance(item, dict):
-                failures.append({"number": index, "error": "invalid page item"})
-                continue
-            page_path = str(item.get("path") or "").lstrip("/")
-            if not page_path:
-                failures.append({"number": index, "error": "empty path"})
-                continue
-            suffix = Path(urllib.parse.urlparse(page_path).path).suffix or ".webp"
-            file_path = images_dir / f"{index:04d}{suffix}"
-            image_url = _join_url(image_base_url, page_path)
-            image_specs.append(
-                ImageDownloadSpec(
-                    path=file_path,
-                    url=image_url,
-                    metadata={
-                        "number": index,
-                        "width": item.get("width"),
-                        "height": item.get("height"),
-                    },
-                )
-            )
-
-        image_paths, downloaded, image_failures = _download_image_specs(
-            image_specs,
-            image_headers,
-            timeout=max(10.0, self.timeout_ms / 1000),
-            proxy=self.nhentai_proxy,
-            retries=self.download_retries,
-            service_label="nhentai 原图",
-            proxy_setting="nhentai.proxy",
-        )
-        failures.extend(image_failures)
-
-        if failures:
-            raise RuntimeError(f"原图下载不完整：成功 {len(downloaded)} 张，失败 {len(failures)} 张")
-
-        pdf_password = _generate_pdf_password()
-        _create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
-
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "id": metadata.get("id"),
-                    "media_id": media_id,
-                    "title": title_info,
-                    "num_pages": metadata.get("num_pages"),
-                    "downloaded": downloaded,
-                    "failures": failures,
-                    "pdf": pdf_path.name,
-                    "pdf_password": pdf_password,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return GalleryDownload(
-            gallery_id=gallery_id,
-            media_id=media_id,
-            title=title,
-            image_paths=image_paths,
-            pdf_path=pdf_path,
-            pdf_password=pdf_password,
-            metadata_path=metadata_path,
+        return nhentai_service.download_gallery(
+            self,
+            gallery_id,
+            _service_core(),
         )
 
     def _build_pdf_result(self, event: AstrMessageEvent, download: GalleryDownload):
