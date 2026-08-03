@@ -376,6 +376,10 @@ def _extract_download_command(message: str) -> tuple[str, str]:
         extracted = _extract_command_text(text, command)
         if extracted != text:
             return command, extracted
+    # 某些适配器/命令过滤器会把命令名从 message_str 中移除，只留下参数。
+    # 统一入口可以根据 ID 格式兜底识别这种情况。
+    if text and any(pattern.fullmatch(text) for _, pattern in DOWNLOAD_ID_PATTERNS):
+        return "对的", text
     return "", ""
 
 
@@ -1023,35 +1027,116 @@ def _format_result(result: SearchResult, order: int) -> str:
     return "\n".join(lines)
 
 
+def _build_nhentai_search_url(query: str) -> str:
+    return f"https://nhentai.net/search/?{urllib.parse.urlencode({'q': query})}"
+
+
+def _build_nhentai_gallery_url(gallery_id: str) -> str:
+    return f"https://nhentai.net/g/{urllib.parse.quote(gallery_id, safe='')}/"
+
+
+def _normalize_jmcomic_web_domain(domain: str | None = None) -> str:
+    value = str(domain or DEFAULT_JMCOMIC_DOMAINS[0]).strip().rstrip("/")
+    if value.startswith(("http://", "https://")):
+        return value
+    return f"https://{value}"
+
+
+def _build_jmcomic_search_url(query: str, domain: str | None = None) -> str:
+    base_url = _normalize_jmcomic_web_domain(domain)
+    params = urllib.parse.urlencode(
+        {
+            "main_tag": 0,
+            "search_query": query,
+            "page": 1,
+        }
+    )
+    return f"{base_url}/search/photos?{params}"
+
+
+def _build_jmcomic_album_url(comic_id: str, domain: str | None = None) -> str:
+    numeric_id = (
+        _jmcomic_numeric_id(comic_id)
+        if comic_id.lower().startswith("jm")
+        else comic_id
+    )
+    return (
+        f"{_normalize_jmcomic_web_domain(domain)}/album/"
+        f"{urllib.parse.quote(numeric_id, safe='')}/"
+    )
+
+
+def _build_pica_search_url(query: str) -> str:
+    params = urllib.parse.urlencode({"page": 1, "keyword": query})
+    return f"{_pica_api_url('/comics/advanced-search')}?{params}"
+
+
+def _build_pica_comic_url(comic_id: str) -> str:
+    return f"{_pica_api_url('/comics')}/{urllib.parse.quote(comic_id, safe='')}"
+
+
 def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     return (
         "找到第一个 nhentai 结果：\n"
         f"ID: {candidate.gallery_id}\n"
         f"标题: {candidate.title}\n"
-        f"链接: https://nhentai.net/g/{candidate.gallery_id}/"
+        f"链接: {_build_nhentai_gallery_url(candidate.gallery_id)}"
     )
 
 
-def _format_jmcomic_candidate(candidate: JmComicCandidate) -> str:
-    return (
-        "找到第一个禁漫结果：\n"
-        f"标题: {candidate.title}\n"
-        f"ID: {candidate.comic_id}"
+def _format_jmcomic_candidate(
+    candidate: JmComicCandidate,
+    query: str | None = None,
+    domain: str | None = None,
+) -> str:
+    lines = ["找到第一个禁漫结果："]
+    if query:
+        lines.append(f"搜索链接：{_build_jmcomic_search_url(query, domain)}")
+    lines.extend(
+        [
+            f"标题: {candidate.title}",
+            f"ID: {candidate.comic_id}",
+            f"链接：{_build_jmcomic_album_url(candidate.comic_id, domain)}",
+        ]
     )
+    return "\n".join(lines)
 
 
-def _format_text_search_candidate(source: str, candidate: Any) -> str:
+def _format_text_search_candidate(
+    source: str,
+    candidate: Any,
+    jmcomic_domain: str | None = None,
+) -> str:
     if isinstance(candidate, NhentaiCandidate):
-        return f"ID: {candidate.gallery_id}\n标题: {candidate.title}"
+        return (
+            f"ID: {candidate.gallery_id}\n"
+            f"标题: {candidate.title}\n"
+            f"链接：{_build_nhentai_gallery_url(candidate.gallery_id)}"
+        )
     if isinstance(candidate, JmComicCandidate):
-        return f"ID: {candidate.comic_id}\n标题: {candidate.title}"
+        return (
+            f"ID: {candidate.comic_id}\n"
+            f"标题: {candidate.title}\n"
+            f"链接：{_build_jmcomic_album_url(candidate.comic_id, jmcomic_domain)}"
+        )
     if isinstance(candidate, PicaComicCandidate):
-        return f"ID: {candidate.comic_id}\n标题: {candidate.title}"
+        return (
+            f"ID: {candidate.comic_id}\n"
+            f"标题: {candidate.title}\n"
+            f"链接：{_build_pica_comic_url(candidate.comic_id)}"
+        )
     raise TypeError(f"未知的搜索结果类型：{source}")
 
 
-def _format_text_search_group(source: str, result: object) -> str:
+def _format_text_search_group(
+    source: str,
+    result: object,
+    search_url: str | None = None,
+    jmcomic_domain: str | None = None,
+) -> str:
     lines = [f"{source}："]
+    if search_url:
+        lines.append(f"搜索链接：{search_url}")
     if isinstance(result, EmptySearchResultError):
         lines.append("空的。")
         return "\n".join(lines)
@@ -1063,29 +1148,52 @@ def _format_text_search_group(source: str, result: object) -> str:
         return "\n".join(lines)
     for index, candidate in enumerate(result[:TEXT_SEARCH_RESULT_LIMIT], 1):
         lines.append(f"{index}.")
-        lines.append(_format_text_search_candidate(source, candidate))
+        lines.append(
+            _format_text_search_candidate(source, candidate, jmcomic_domain)
+        )
     return "\n".join(lines)
 
 
 def _format_combined_text_search(
+    query: str,
     nhentai_result: object,
     jmcomic_result: object,
     pica_result: object,
+    jmcomic_domain: str | None = None,
 ) -> str:
     return "\n\n".join(
         [
-            _format_text_search_group("nhentai", nhentai_result),
-            _format_text_search_group("禁漫天堂", jmcomic_result),
-            _format_text_search_group("哔咔", pica_result),
+            _format_text_search_group(
+                "nhentai",
+                nhentai_result,
+                _build_nhentai_search_url(query),
+            ),
+            _format_text_search_group(
+                "禁漫天堂",
+                jmcomic_result,
+                _build_jmcomic_search_url(query, jmcomic_domain),
+                jmcomic_domain,
+            ),
+            _format_text_search_group(
+                "哔咔",
+                pica_result,
+                _build_pica_search_url(query),
+            ),
         ]
     )
 
 
-def _format_pica_candidates(candidates: list[PicaComicCandidate]) -> str:
+def _format_pica_candidates(
+    candidates: list[PicaComicCandidate],
+    query: str | None = None,
+) -> str:
     lines = ["找到这些哔咔结果："]
+    if query:
+        lines.append(f"搜索链接：{_build_pica_search_url(query)}")
     for index, candidate in enumerate(candidates, 1):
         lines.append(f"{index}. {candidate.title}")
         lines.append(f"ID: {candidate.comic_id}")
+        lines.append(f"链接：{_build_pica_comic_url(candidate.comic_id)}")
         if candidate.author:
             lines.append(f"作者: {candidate.author}")
         if candidate.categories:
@@ -1106,7 +1214,7 @@ def _format_pica_candidates(candidates: list[PicaComicCandidate]) -> str:
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.3")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.4")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1350,7 +1458,13 @@ class XxComicGetPlugin(Star):
         for source, result in zip(("nhentai", "禁漫天堂", "哔咔"), resolved, strict=True):
             if isinstance(result, Exception) and not isinstance(result, EmptySearchResultError):
                 logger.warning("%s 文本搜索失败：%s", source, result)
-        yield event.plain_result(_format_combined_text_search(*resolved))
+        yield event.plain_result(
+            _format_combined_text_search(
+                query,
+                *resolved,
+                jmcomic_domain=self.jmcomic_domains[0],
+            )
+        )
 
     @filter.command("JJS")
     async def search_jmcomic_text(self, event: AstrMessageEvent):
@@ -1358,7 +1472,7 @@ class XxComicGetPlugin(Star):
         self._start_cache_cleanup_task()
         query = _extract_command_text(getattr(event, "message_str", ""), "JJS")
         if not query:
-            yield event.plain_result("请发送：/JJS <搜索文本>")
+            yield event.plain_result("？")
             return
 
         try:
@@ -1371,7 +1485,13 @@ class XxComicGetPlugin(Star):
             yield event.plain_result(f"搜索失败：{exc}")
             return
 
-        yield event.plain_result(_format_jmcomic_candidate(candidate))
+        yield event.plain_result(
+            _format_jmcomic_candidate(
+                candidate,
+                query=query,
+                domain=self.jmcomic_domains[0],
+            )
+        )
 
     @filter.command("bklogin")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -1381,7 +1501,7 @@ class XxComicGetPlugin(Star):
         text = _extract_command_text(getattr(event, "message_str", ""), "bklogin")
         parts = text.split(maxsplit=1)
         if len(parts) != 2:
-            yield event.plain_result("请发送：/bklogin <用户名> <密码>")
+            yield event.plain_result("？")
             return
         email, password = parts
         try:
@@ -1398,7 +1518,7 @@ class XxComicGetPlugin(Star):
         self._start_cache_cleanup_task()
         query = _extract_command_text(getattr(event, "message_str", ""), "bk")
         if not query:
-            yield event.plain_result("请发送：/bk <搜索文本>")
+            yield event.plain_result("？")
             return
 
         try:
@@ -1411,17 +1531,34 @@ class XxComicGetPlugin(Star):
             yield event.plain_result(f"搜索失败：{exc}")
             return
 
-        yield event.plain_result(_format_pica_candidates(candidates))
+        yield event.plain_result(_format_pica_candidates(candidates, query=query))
 
     @filter.command("对的")
     @filter.command("JJ")
     @filter.command("bkdl")
-    async def download_by_id(self, event: AstrMessageEvent):
+    async def download_by_id(
+        self,
+        event: AstrMessageEvent,
+        raw_id: str | None = None,
+    ):
         """按 ID 类型统一下载 nhentai、禁漫或哔咔并生成加密 PDF"""
         self._start_cache_cleanup_task()
-        command, raw_id = _extract_download_command(getattr(event, "message_str", ""))
+        command, message_raw_id = _extract_download_command(
+            getattr(event, "message_str", "")
+        )
+        if message_raw_id:
+            raw_id = message_raw_id
+        parsed_params = {}
+        get_extra = getattr(event, "get_extra", None)
+        if callable(get_extra):
+            parsed_params = get_extra("parsed_params") or {}
+        parsed_id = parsed_params.get("raw_id") if isinstance(parsed_params, dict) else None
+        if parsed_id is not None and str(parsed_id).strip():
+            raw_id = str(parsed_id).strip()
+        if not command and raw_id:
+            command = "对的"
         if not raw_id:
-            yield event.plain_result("请发送：/对的 <nhentai数字ID、jm+数字或24位哔咔ID>")
+            yield event.plain_result("？")
             return
         try:
             if command == "JJ":

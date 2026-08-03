@@ -12,19 +12,19 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 
 插件会用 Playwright 打开 `https://soutubot.moe/`，通过页面上传图片并解析搜索结果。若搜索结果里有 `nhentai`，会先返回第一个 `nhentai` 结果的 ID、标题和链接。
 
-也可以直接按文本聚合搜索 nhentai、禁漫天堂和哔咔；每个来源最多返回前 5 条结果，并保留对应 ID 和标题：
+也可以直接按文本聚合搜索 nhentai、禁漫天堂和哔咔；每个来源最多返回前 5 条结果，并保留搜索链接、条目链接、ID 和标题：
 
 ```text
 /嘻嘻 [Cuchuflin] Bug Bite: Chapter 8
 ```
 
-兼容旧入口：也可以只搜索禁漫天堂，并返回第一个搜索结果的标题和 ID，不下载：
+兼容旧入口：也可以只搜索禁漫天堂，并返回搜索链接、第一个搜索结果的标题、ID 和条目链接，不下载：
 
 ```text
 /JJS MANA 无修正
 ```
 
-兼容旧入口：也可以只搜索哔咔漫画，并返回前几条结果：
+兼容旧入口：也可以只搜索哔咔漫画，并返回搜索链接和前几条结果的条目链接：
 
 ```text
 /bk MANA 无修正
@@ -90,12 +90,12 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 ## 下载与发送
 
 - `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果。
-- `/嘻嘻` 会同时搜索 nhentai、禁漫天堂和哔咔，每个来源最多返回前 5 条结果的 ID 和标题。
+- `/嘻嘻` 会同时搜索 nhentai、禁漫天堂和哔咔，每个来源最多返回前 5 条结果的搜索链接、条目链接、ID 和标题。
 - nhentai 搜索会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`；未配置 API Key 时只会在 nhentai 分组提示 `未配置api`，其他来源仍会继续搜索。
-- `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，只返回第一页第一条结果的标题和 ID，不下载。
-- `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回 ID、标题、作者、分类、标签和页数等摘要，不下载。
+- `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，返回搜索链接和第一页第一条结果的标题、ID、条目链接，不下载。
+- `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回搜索链接、条目链接、ID、标题、作者、分类、标签和页数等摘要，不下载。
 - `/bklogin <用户名> <密码>` 会调用哔咔 `POST /auth/sign-in` 获取 token，仅管理员可调用；token 缓存在插件数据目录的 `accounts/pica_token.json`。
-- `/对的 <id>` 是统一下载入口：`jm` 加数字匹配禁漫，24 位十六进制字符串优先匹配哔咔，其他纯数字匹配 nhentai；下载前先复用完整缓存，最终始终校验为加密 PDF。
+- `/对的 <id>` 是统一下载入口：`jm` 加数字匹配禁漫，24 位十六进制字符串优先匹配哔咔，其他纯数字匹配 nhentai；下载前先复用完整缓存，最终始终校验为加密 PDF。`/对的`、`/JJ`、`/bkdl` 没有 ID 时返回 `？`。
 - `/JJ <jm id>` 和 `/bkdl <哔咔漫画ID>` 是兼容别名，分别转发到 `/对的` 的同一套下载流程。
 - nhentai 通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表；哔咔图片地址可能访问 `img.picacomic.com`、`storage-b.picacomic.com`、`storage1.picacomic.com`。
 - 下载图片保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
@@ -145,23 +145,29 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 /嘻嘻 MANA 无修正
 ```
 
-插件会同时搜索 nhentai、禁漫天堂和哔咔，并按来源分组返回前 5 条结果：
+插件会同时搜索 nhentai、禁漫天堂和哔咔，并按来源分组返回前 5 条结果。每组先给出搜索链接，每条结果都给出条目链接：
 
 ```text
 nhentai：
+搜索链接：...
 1.
 ID: 123456
 标题: ...
+链接：...
 
 禁漫天堂：
+搜索链接：...
 1.
 ID: jm112233
 标题: ...
+链接：...
 
 哔咔：
+搜索链接：...
 1.
 ID: ...
 标题: ...
+链接：...
 ```
 
 如果某个来源没有配置、没有结果或搜索失败，只会影响该来源分组，其他来源会继续返回。
@@ -178,8 +184,10 @@ ID: ...
 
 ```text
 找到第一个禁漫结果：
+搜索链接：...
 标题: ...
 ID: jm112233
+链接：...
 ```
 
 这个命令不会下载图片，也不会生成 PDF。
@@ -196,8 +204,10 @@ ID: jm112233
 
 ```text
 找到这些哔咔结果：
+搜索链接：...
 1. ...
 ID: ...
+链接：...
 作者: ...
 分类: ...
 标签: ...
