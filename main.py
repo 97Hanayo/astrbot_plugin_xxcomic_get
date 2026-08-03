@@ -45,6 +45,7 @@ PICA_IMAGE_QUALITY = "original"
 DEFAULT_TIMEOUT_MS = 60000
 CACHE_CLEANUP_STATE_FILE = "cache_cleanup_state.json"
 DEFAULT_CACHE_CLEANUP_HOUR = 2
+TEXT_SEARCH_RESULT_LIMIT = 5
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126 Safari/537.36"
@@ -814,6 +815,47 @@ def _format_jmcomic_candidate(candidate: JmComicCandidate) -> str:
     )
 
 
+def _format_text_search_candidate(source: str, candidate: Any) -> str:
+    if isinstance(candidate, NhentaiCandidate):
+        return f"ID: {candidate.gallery_id}\n标题: {candidate.title}"
+    if isinstance(candidate, JmComicCandidate):
+        return f"ID: {candidate.comic_id}\n标题: {candidate.title}"
+    if isinstance(candidate, PicaComicCandidate):
+        return f"ID: {candidate.comic_id}\n标题: {candidate.title}"
+    raise TypeError(f"未知的搜索结果类型：{source}")
+
+
+def _format_text_search_group(source: str, result: object) -> str:
+    lines = [f"{source}："]
+    if isinstance(result, EmptySearchResultError):
+        lines.append("空的。")
+        return "\n".join(lines)
+    if isinstance(result, Exception):
+        lines.append(f"搜索失败：{result}")
+        return "\n".join(lines)
+    if not isinstance(result, list) or not result:
+        lines.append("空的。")
+        return "\n".join(lines)
+    for index, candidate in enumerate(result[:TEXT_SEARCH_RESULT_LIMIT], 1):
+        lines.append(f"{index}.")
+        lines.append(_format_text_search_candidate(source, candidate))
+    return "\n".join(lines)
+
+
+def _format_combined_text_search(
+    nhentai_result: object,
+    jmcomic_result: object,
+    pica_result: object,
+) -> str:
+    return "\n\n".join(
+        [
+            _format_text_search_group("nhentai", nhentai_result),
+            _format_text_search_group("禁漫天堂", jmcomic_result),
+            _format_text_search_group("哔咔", pica_result),
+        ]
+    )
+
+
 def _format_pica_candidates(candidates: list[PicaComicCandidate]) -> str:
     lines = ["找到这些哔咔结果："]
     for index, candidate in enumerate(candidates, 1):
@@ -839,7 +881,7 @@ def _format_pica_candidates(candidates: list[PicaComicCandidate]) -> str:
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.0")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.2.1")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1034,27 +1076,40 @@ class XxComicGetPlugin(Star):
 
     @filter.command("嘻嘻")
     async def search_nhentai_text(self, event: AstrMessageEvent):
-        """按文本搜索 nhentai 并返回第一个结果，等待确认下载"""
+        """按文本同时搜索 nhentai、禁漫天堂和哔咔"""
         self._start_cache_cleanup_task()
         query = _extract_command_text(getattr(event, "message_str", ""), "嘻嘻")
         if not query:
             yield event.plain_result("？")
             return
-        if not self._has_nhentai_api_key():
-            yield event.plain_result("未配置api")
-            return
 
-        try:
-            candidate = await self._search_nhentai_first_gallery(query)
-        except EmptySearchResultError:
-            yield event.plain_result("空的。")
-            return
-        except Exception as exc:
-            logger.exception("nhentai 文本搜索失败")
-            yield event.plain_result(f"搜索失败：{exc}")
-            return
+        nhentai_task = (
+            self._search_nhentai_galleries(query, TEXT_SEARCH_RESULT_LIMIT)
+            if self._has_nhentai_api_key()
+            else RuntimeError("未配置api")
+        )
+        tasks: list[object] = [
+            nhentai_task,
+            self._search_jmcomic_albums(query, TEXT_SEARCH_RESULT_LIMIT),
+            self._search_pica_comics(query, TEXT_SEARCH_RESULT_LIMIT),
+        ]
+        results = await asyncio.gather(
+            *(task for task in tasks if asyncio.iscoroutine(task)),
+            return_exceptions=True,
+        )
+        resolved: list[object] = []
+        result_index = 0
+        for task in tasks:
+            if asyncio.iscoroutine(task):
+                resolved.append(results[result_index])
+                result_index += 1
+            else:
+                resolved.append(task)
 
-        yield event.plain_result(_format_nhentai_candidate(candidate))
+        for source, result in zip(("nhentai", "禁漫天堂", "哔咔"), resolved, strict=True):
+            if isinstance(result, Exception) and not isinstance(result, EmptySearchResultError):
+                logger.warning("%s 文本搜索失败：%s", source, result)
+        yield event.plain_result(_format_combined_text_search(*resolved))
 
     @filter.command("JJS")
     async def search_jmcomic_text(self, event: AstrMessageEvent):
@@ -1318,16 +1373,36 @@ class XxComicGetPlugin(Star):
         return await asyncio.to_thread(self._download_jmcomic_album_sync_locked, comic_id)
 
     async def _search_nhentai_first_gallery(self, query: str) -> NhentaiCandidate:
-        return await asyncio.to_thread(self._search_nhentai_first_gallery_sync, query)
+        candidates = await self._search_nhentai_galleries(query, 1)
+        return candidates[0]
+
+    async def _search_nhentai_galleries(
+        self,
+        query: str,
+        limit: int = TEXT_SEARCH_RESULT_LIMIT,
+    ) -> list[NhentaiCandidate]:
+        return await asyncio.to_thread(self._search_nhentai_galleries_sync, query, limit)
 
     async def _search_jmcomic_first_album(self, query: str) -> JmComicCandidate:
-        return await asyncio.to_thread(self._search_jmcomic_first_album_sync_locked, query)
+        candidates = await self._search_jmcomic_albums(query, 1)
+        return candidates[0]
+
+    async def _search_jmcomic_albums(
+        self,
+        query: str,
+        limit: int = TEXT_SEARCH_RESULT_LIMIT,
+    ) -> list[JmComicCandidate]:
+        return await asyncio.to_thread(self._search_jmcomic_albums_sync_locked, query, limit)
 
     async def _login_pica(self, email: str, password: str) -> None:
         await asyncio.to_thread(self._login_pica_sync, email, password)
 
-    async def _search_pica_comics(self, query: str) -> list[PicaComicCandidate]:
-        return await asyncio.to_thread(self._search_pica_comics_sync, query)
+    async def _search_pica_comics(
+        self,
+        query: str,
+        limit: int | None = None,
+    ) -> list[PicaComicCandidate]:
+        return await asyncio.to_thread(self._search_pica_comics_sync, query, limit)
 
     def _login_pica_sync(self, email: str, password: str) -> None:
         normalized_email = str(email or "").strip()
@@ -1355,10 +1430,20 @@ class XxComicGetPlugin(Star):
             raise RuntimeError("哔咔登录没有返回 token")
         _write_pica_token(token)
 
-    def _search_pica_comics_sync(self, query: str) -> list[PicaComicCandidate]:
+    def _search_pica_comics_sync(
+        self,
+        query: str,
+        limit: int | None = None,
+    ) -> list[PicaComicCandidate]:
         search_query = query.strip()
         if not search_query:
             raise RuntimeError("搜索文本为空")
+        max_results = _coerce_int(
+            limit if limit is not None else self.pica_max_results,
+            default=self.pica_max_results,
+            min_value=1,
+            max_value=10,
+        )
         token = self._require_pica_token()
         endpoint = "/comics/advanced-search"
         method = "POST"
@@ -1419,16 +1504,21 @@ class XxComicGetPlugin(Star):
                     finished=item.get("finished") if isinstance(item.get("finished"), bool) else None,
                 )
             )
-            if len(candidates) >= self.pica_max_results:
+            if len(candidates) >= max_results:
                 break
         if not candidates:
             raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
         return candidates
 
-    def _search_nhentai_first_gallery_sync(self, query: str) -> NhentaiCandidate:
+    def _search_nhentai_galleries_sync(
+        self,
+        query: str,
+        limit: int = TEXT_SEARCH_RESULT_LIMIT,
+    ) -> list[NhentaiCandidate]:
         search_query = query.strip()
         if not search_query:
             raise RuntimeError("搜索文本为空")
+        max_results = _coerce_int(limit, default=TEXT_SEARCH_RESULT_LIMIT, min_value=1, max_value=10)
         api_key = self._require_nhentai_api_key()
 
         url = (
@@ -1455,23 +1545,42 @@ class XxComicGetPlugin(Star):
         if not isinstance(raw_results, list) or not raw_results:
             raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
 
-        first = raw_results[0]
-        if not isinstance(first, dict):
-            raise RuntimeError("第一个搜索结果格式不正确")
-        gallery_id = str(first.get("id") or first.get("gallery_id") or "").strip()
-        if not gallery_id:
-            raise RuntimeError("第一个搜索结果没有 gallery id")
-        title = _extract_nhentai_title(first, f"nhentai {gallery_id}")
-        return NhentaiCandidate(gallery_id=gallery_id, title=title)
+        candidates: list[NhentaiCandidate] = []
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            gallery_id = str(item.get("id") or item.get("gallery_id") or "").strip()
+            if not gallery_id:
+                continue
+            candidates.append(
+                NhentaiCandidate(
+                    gallery_id=gallery_id,
+                    title=_extract_nhentai_title(item, f"nhentai {gallery_id}"),
+                )
+            )
+            if len(candidates) >= max_results:
+                break
+        if not candidates:
+            raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
+        return candidates
 
-    def _search_jmcomic_first_album_sync_locked(self, query: str) -> JmComicCandidate:
+    def _search_jmcomic_albums_sync_locked(
+        self,
+        query: str,
+        limit: int = TEXT_SEARCH_RESULT_LIMIT,
+    ) -> list[JmComicCandidate]:
         with self._cache_lock:
-            return self._search_jmcomic_first_album_sync(query)
+            return self._search_jmcomic_albums_sync(query, limit)
 
-    def _search_jmcomic_first_album_sync(self, query: str) -> JmComicCandidate:
+    def _search_jmcomic_albums_sync(
+        self,
+        query: str,
+        limit: int = TEXT_SEARCH_RESULT_LIMIT,
+    ) -> list[JmComicCandidate]:
         search_query = query.strip()
         if not search_query:
             raise RuntimeError("搜索文本为空")
+        max_results = _coerce_int(limit, default=TEXT_SEARCH_RESULT_LIMIT, min_value=1, max_value=10)
 
         try:
             from jmcomic import create_option_by_file
@@ -1513,14 +1622,22 @@ class XxComicGetPlugin(Star):
                 ) from exc
             raise
 
+        candidates: list[JmComicCandidate] = []
         for album_id, title in page:
             comic_id = str(album_id).strip()
             if not comic_id:
                 continue
-            return JmComicCandidate(
-                comic_id=f"jm{comic_id}" if comic_id.isdigit() else comic_id,
-                title=str(title or f"jm{comic_id}").strip(),
+            normalized_id = f"jm{comic_id}" if comic_id.isdigit() else comic_id
+            candidates.append(
+                JmComicCandidate(
+                    comic_id=normalized_id,
+                    title=str(title or normalized_id).strip(),
+                )
             )
+            if len(candidates) >= max_results:
+                break
+        if candidates:
+            return candidates
         raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
 
     def _download_nhentai_gallery_sync_locked(self, gallery_id: str) -> GalleryDownload:

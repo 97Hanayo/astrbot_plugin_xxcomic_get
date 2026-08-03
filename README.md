@@ -12,19 +12,19 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 
 插件会用 Playwright 打开 `https://soutubot.moe/`，通过页面上传图片并解析搜索结果。若搜索结果里有 `nhentai`，会先返回第一个 `nhentai` 结果的 ID、标题和链接。
 
-也可以直接按文本搜索 nhentai，并返回第一个搜索结果：
+也可以直接按文本聚合搜索 nhentai、禁漫天堂和哔咔；每个来源最多返回前 5 条结果，并保留对应 ID 和标题：
 
 ```text
 /嘻嘻 [Cuchuflin] Bug Bite: Chapter 8
 ```
 
-也可以只搜索禁漫天堂，并返回第一个搜索结果的标题和 ID，不下载：
+兼容旧入口：也可以只搜索禁漫天堂，并返回第一个搜索结果的标题和 ID，不下载：
 
 ```text
 /JJS MANA 无修正
 ```
 
-也可以搜索哔咔漫画，并返回前几条结果：
+兼容旧入口：也可以只搜索哔咔漫画，并返回前几条结果：
 
 ```text
 /bk MANA 无修正
@@ -83,7 +83,8 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 ## 下载与发送
 
 - `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果。
-- `/嘻嘻` 会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，返回第一个搜索结果的 ID、标题和链接。
+- `/嘻嘻` 会同时搜索 nhentai、禁漫天堂和哔咔，每个来源最多返回前 5 条结果的 ID 和标题。
+- nhentai 搜索会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`；未配置 API Key 时只会在 nhentai 分组提示 `未配置api`，其他来源仍会继续搜索。
 - `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，只返回第一页第一条结果的标题和 ID，不下载。
 - `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回 ID、标题、作者、分类、标签和页数等摘要，不下载。
 - `/bklogin <用户名> <密码>` 会调用哔咔 `POST /auth/sign-in` 获取 token，仅管理员可调用；token 缓存在插件数据目录的 `accounts/pica_token.json`。
@@ -97,7 +98,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 ## 说明
 
-- 命令入口：`/哈哈`、`/嘻嘻`、`/JJS <文本>`、`/JJ <jm id>`、`/bk <文本>`、`/bklogin <用户名> <密码>`、`/对的 <id>`
+- 命令入口：`/哈哈`、`/嘻嘻 <文本>`、`/JJS <文本>`、`/JJ <jm id>`、`/bk <文本>`、`/bklogin <用户名> <密码>`、`/对的 <id>`
 - 只处理同一条消息中的第一张图片
 - 搜索服务：SoutuBot
 - 下载来源：nhentai API v2、jmcomic
@@ -124,6 +125,35 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 | `jmcomic.cookies` | 禁漫 Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
 
 如果提示 `/setting` 或“请求重试全部失败”，通常是当前环境访问配置的禁漫域名失败。优先换 `jmcomic.domains`，或给 AstrBot 运行环境配置可访问的 `jmcomic.proxy`。
+
+## 聚合文本搜索
+
+发送：
+
+```text
+/嘻嘻 MANA 无修正
+```
+
+插件会同时搜索 nhentai、禁漫天堂和哔咔，并按来源分组返回前 5 条结果：
+
+```text
+nhentai：
+1.
+ID: 123456
+标题: ...
+
+禁漫天堂：
+1.
+ID: jm112233
+标题: ...
+
+哔咔：
+1.
+ID: ...
+标题: ...
+```
+
+如果某个来源没有配置、没有结果或搜索失败，只会影响该来源分组，其他来源会继续返回。
 
 ## 禁漫天堂搜索
 
