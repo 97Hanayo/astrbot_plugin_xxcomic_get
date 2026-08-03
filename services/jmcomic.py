@@ -67,6 +67,19 @@ def _raise_domain_initialization_error(exc: BaseException, plugin: Any) -> None:
     ) from exc
 
 
+def _get_album_title(option: Any, numeric_id: str, fallback: str, core: Any) -> str:
+    """Best-effort title lookup without making title retrieval block downloads."""
+    for impl in ("html", "api"):
+        try:
+            detail = option.new_jm_client(impl=impl).get_album_detail(numeric_id)
+            title = str(getattr(detail, "title", "") or "").strip()
+            if title:
+                return title
+        except Exception as exc:
+            core.logger.debug("获取禁漫标题失败（%s/%s）：%s", numeric_id, impl, exc)
+    return fallback
+
+
 def login(plugin: Any, account: str, password: str, core: Any) -> None:
     normalized_account = str(account or "").strip()
     normalized_password = str(password or "").strip()
@@ -232,6 +245,8 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
         if not _apply_auth_cookies(option, plugin, core):
             raise RuntimeError("禁漫自动登录没有返回有效 token")
 
+    title = _get_album_title(option, numeric_id, f"禁漫 {comic_id}", core)
+
     try:
         jm_download_album(
             numeric_id,
@@ -286,8 +301,9 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
+    image_paths = core._collect_image_files(jm_work_dir)
+    page_count = len(image_paths)
     if not generated_pdfs:
-        image_paths = core._collect_image_files(jm_work_dir)
         if not image_paths:
             raise RuntimeError("jmcomic 下载完成后没有找到导出的 PDF，也没有找到可用于合成 PDF 的图片")
         core._create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
@@ -308,6 +324,8 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
             {
                 "id": comic_id,
                 "jm_album_id": numeric_id,
+                "title": title,
+                "page_count": page_count,
                 "pdf": pdf_path.name,
                 "pdf_password": pdf_password,
                 "source_pdf": generated_pdf_name,
@@ -320,6 +338,8 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
     )
     return core.JmComicDownload(
         comic_id=comic_id,
+        title=title,
+        page_count=page_count,
         pdf_path=pdf_path,
         pdf_password=pdf_password,
         metadata_path=metadata_path,

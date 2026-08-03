@@ -98,7 +98,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 - `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回搜索链接、条目链接、ID、标题、作者、分类、标签和页数等摘要，不下载。
 - `/bklogin <用户名> <密码>` 会调用哔咔 `POST /auth/sign-in` 获取 token，仅管理员可调用；token 缓存在插件数据目录的 `accounts/pica_token.json`。
 - `jmcomic.username` 和 `jmcomic.password` 会调用 JMComic 的 HTML 客户端自动登录；登录返回的 cookies/token 缓存在插件数据目录的 `accounts/jmcomic_token.json`，下载时自动携带。
-- `/对的 <id>` 是统一下载入口：`jm` 加数字匹配禁漫，24 位十六进制字符串优先匹配哔咔，其他纯数字匹配 nhentai；下载前先复用完整缓存，最终始终校验为加密 PDF。`/对的`、`/JJ`、`/bkdl` 没有 ID 时返回 `？`。
+- `/对的 <id>` 是统一下载入口：`jm` 加数字匹配禁漫，24 位十六进制字符串优先匹配哔咔，其他纯数字匹配 nhentai；下载前先复用完整缓存，最终始终校验为加密 PDF。三种来源的下载回复统一包含 ID、标题、页数、PDF 状态和密码。`/对的`、`/JJ`、`/bkdl` 没有 ID 时返回 `？`。
 - `/JJ <jm id>` 和 `/bkdl <哔咔漫画ID>` 是兼容别名，分别转发到 `/对的` 的同一套下载流程。
 - nhentai 通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表；哔咔图片地址可能访问 `img.picacomic.com`、`storage-b.picacomic.com`、`storage1.picacomic.com`。
 - 下载图片保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
@@ -125,7 +125,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 兼容旧命令：`/JJ jm112233`
 
-插件会调用 `jmcomic` 下载整本，并使用内置 PDF 导出能力生成加密 PDF。最终发送的文件名固定为输入 id，例如 `jm112233.pdf`；密码会随消息一起返回。id 仅接受 `jm+数字` 的形式。
+插件会调用 `jmcomic` 下载整本，并使用内置 PDF 导出能力生成加密 PDF。回复会包含禁漫专辑标题和页数；最终发送的文件名固定为输入 id，例如 `jm112233.pdf`；密码会随消息一起返回。id 仅接受 `jm+数字` 的形式。
 如果运行环境的 jmcomic PDF 导出没有产物，插件会用已下载图片兜底合成加密 PDF。
 下载前需要配置 `jmcomic.username` 和 `jmcomic.password`；登录 cookies/token 过期后插件会自动重新登录。也可以继续通过 `jmcomic.cookies` 提供手工 cookies。
 

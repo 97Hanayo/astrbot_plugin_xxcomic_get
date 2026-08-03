@@ -129,6 +129,8 @@ class GalleryDownload:
 @dataclass(slots=True)
 class JmComicDownload:
     comic_id: str
+    title: str
+    page_count: int
     pdf_path: Path
     pdf_password: str
     metadata_path: Path
@@ -1037,8 +1039,16 @@ def _load_cached_jmcomic_download(comic_id: str) -> JmComicDownload | None:
     cached_pdf_password = str(cached_metadata.get("pdf_password") or "").strip()
     if not _is_usable_cached_pdf(pdf_path, cached_pdf_password):
         return None
+    try:
+        cached_page_count = int(cached_metadata.get("page_count") or 0)
+    except (TypeError, ValueError):
+        cached_page_count = 0
+    if cached_page_count <= 0:
+        cached_page_count = len(_collect_image_files(download_dir / "jmcomic"))
     return JmComicDownload(
         comic_id=comic_id,
+        title=_metadata_title(cached_metadata, f"禁漫 {comic_id}"),
+        page_count=cached_page_count,
         pdf_path=pdf_path,
         pdf_password=cached_pdf_password,
         metadata_path=metadata_path,
@@ -1291,7 +1301,7 @@ def _format_pica_candidates(
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.3")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.4")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -2008,6 +2018,7 @@ class XxComicGetPlugin(Star):
             [
                 Plain(
                     f"ID: {download.gallery_id}\n"
+                    f"标题: {download.title}\n"
                     f"页数: {len(download.image_paths)}\n"
                     "PDF: 加密\n"
                     f"密码: {download.pdf_password}"
@@ -2021,6 +2032,8 @@ class XxComicGetPlugin(Star):
             [
                 Plain(
                     f"ID: {download.comic_id}\n"
+                    f"标题: {download.title}\n"
+                    f"页数: {download.page_count}\n"
                     "PDF: 加密\n"
                     f"密码: {download.pdf_password}"
                 ),
