@@ -253,6 +253,53 @@ def _write_pica_token(token: str) -> None:
     )
 
 
+def _get_jmcomic_token_file() -> Path:
+    account_dir = _get_data_dir() / "accounts"
+    account_dir.mkdir(parents=True, exist_ok=True)
+    return account_dir / "jmcomic_token.json"
+
+
+def _read_jmcomic_cookies() -> dict[str, str]:
+    token_file = _get_jmcomic_token_file()
+    if not token_file.exists():
+        return {}
+    try:
+        data = json.loads(token_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    raw_cookies = data.get("cookies")
+    if not isinstance(raw_cookies, dict):
+        return {}
+    return {
+        str(key).strip(): str(value).strip()
+        for key, value in raw_cookies.items()
+        if str(key).strip() and str(value).strip()
+    }
+
+
+def _write_jmcomic_cookies(cookies: dict[str, str]) -> None:
+    normalized_cookies = {
+        str(key).strip(): str(value).strip()
+        for key, value in cookies.items()
+        if str(key).strip() and str(value).strip()
+    }
+    if not normalized_cookies:
+        raise RuntimeError("禁漫登录没有返回有效 token")
+    _get_jmcomic_token_file().write_text(
+        json.dumps(
+            {
+                "cookies": normalized_cookies,
+                "issued_at": int(time.time()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _read_cache_cleanup_state() -> dict[str, Any]:
     state_file = _get_cache_cleanup_state_file()
     if not state_file.exists():
@@ -1244,7 +1291,7 @@ def _format_pica_candidates(
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.2")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.3")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1312,6 +1359,12 @@ class XxComicGetPlugin(Star):
         self.jmcomic_domains = configured_domains or list(DEFAULT_JMCOMIC_DOMAINS)
         self.jmcomic_proxy = str(_get_config_value(self.config, "jmcomic.proxy", "") or "").strip()
         self.jmcomic_cookies = _get_config_value(self.config, "jmcomic.cookies", "")
+        self.jmcomic_username = str(
+            _get_config_value(self.config, "jmcomic.username", "") or ""
+        ).strip()
+        self.jmcomic_password = str(
+            _get_config_value(self.config, "jmcomic.password", "") or ""
+        ).strip()
         self.pica_proxy = str(_get_config_value(self.config, "pica.proxy", "") or "").strip()
         self.pica_max_results = _coerce_int(
             _get_config_value(self.config, "pica.max_results", 5),

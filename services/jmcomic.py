@@ -8,6 +8,107 @@ from pathlib import Path
 from typing import Any
 
 
+def _apply_auth_cookies(option: Any, plugin: Any, core: Any) -> bool:
+    configured_cookies = core._cookie_dict_from_setting(plugin.jmcomic_cookies)
+    login_cookies = core._read_jmcomic_cookies()
+    if configured_cookies:
+        option.update_cookies(configured_cookies)
+    if login_cookies:
+        option.update_cookies(login_cookies)
+    return bool(configured_cookies or login_cookies)
+
+
+def _configured_credentials(plugin: Any) -> tuple[str, str]:
+    return (
+        str(getattr(plugin, "jmcomic_username", "") or "").strip(),
+        str(getattr(plugin, "jmcomic_password", "") or "").strip(),
+    )
+
+
+def _login_from_config(plugin: Any, core: Any) -> None:
+    account, password = _configured_credentials(plugin)
+    if not account or not password:
+        raise RuntimeError("请在插件配置中填写 jmcomic.username 和 jmcomic.password")
+    login(plugin, account, password, core)
+
+
+def _has_configured_credentials(plugin: Any) -> bool:
+    account, password = _configured_credentials(plugin)
+    return bool(account and password)
+
+
+def _looks_like_authentication_error(exc: BaseException) -> bool:
+    error_text = str(exc).lower()
+    return any(
+        marker in error_text
+        for marker in (
+            "未登录",
+            "请先登录",
+            "登录后",
+            "login",
+            "unauthorized",
+            "forbidden",
+            "401",
+            "403",
+        )
+    )
+
+
+def _is_domain_initialization_error(exc: BaseException) -> bool:
+    error_text = str(exc)
+    return "/setting" in error_text or "请求重试全部失败" in error_text
+
+
+def _raise_domain_initialization_error(exc: BaseException, plugin: Any) -> None:
+    domains = ", ".join(plugin.jmcomic_domains)
+    proxy_hint = "；如果运行环境需要代理，请配置 jmcomic.proxy，例如 http://127.0.0.1:7890"
+    raise RuntimeError(
+        f"禁漫域名初始化失败，已尝试这些域名：{domains}{proxy_hint}"
+    ) from exc
+
+
+def login(plugin: Any, account: str, password: str, core: Any) -> None:
+    normalized_account = str(account or "").strip()
+    normalized_password = str(password or "").strip()
+    if not normalized_account or not normalized_password:
+        raise RuntimeError("账号和密码不能为空")
+
+    try:
+        from jmcomic import create_option_by_file
+    except Exception as exc:
+        raise RuntimeError("当前环境缺少 jmcomic，请安装插件依赖后重试") from exc
+
+    option_path = core._get_data_dir() / "jmcomic_login_option.yml"
+    option_lines = [
+        "client:",
+        "  impl: html",
+        "  domain:",
+        "    html:",
+        *[f"      - {domain}" for domain in plugin.jmcomic_domains],
+    ]
+    if plugin.jmcomic_proxy:
+        option_lines.extend(
+            [
+                "  postman:",
+                "    meta_data:",
+                f"      proxies: {plugin.jmcomic_proxy}",
+            ]
+        )
+    option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
+
+    try:
+        option = create_option_by_file(str(option_path))
+        client = option.build_jm_client(impl="html")
+        client.login(normalized_account, normalized_password)
+        cookies = dict(client["cookies"])
+    except Exception as exc:
+        if _is_domain_initialization_error(exc):
+            _raise_domain_initialization_error(exc, plugin)
+        raise
+
+    core._write_jmcomic_cookies(cookies)
+
+
 def search_albums(plugin: Any, query: str, limit: int, core: Any) -> list[Any]:
     search_query = query.strip()
     if not search_query:
@@ -43,20 +144,13 @@ def search_albums(plugin: Any, query: str, limit: int, core: Any) -> list[Any]:
     option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
 
     option = create_option_by_file(str(option_path))
-    cookies = core._cookie_dict_from_setting(plugin.jmcomic_cookies)
-    if cookies:
-        option.update_cookies(cookies)
+    _apply_auth_cookies(option, plugin, core)
 
     try:
         page = option.new_jm_client().search_site(search_query=search_query, page=1)
     except Exception as exc:
-        error_text = str(exc)
-        if "/setting" in error_text or "请求重试全部失败" in error_text:
-            domains = ", ".join(plugin.jmcomic_domains)
-            proxy_hint = "；如果运行环境需要代理，请配置 jmcomic.proxy，例如 http://127.0.0.1:7890"
-            raise RuntimeError(
-                f"禁漫域名初始化失败，已尝试这些域名：{domains}{proxy_hint}"
-            ) from exc
+        if _is_domain_initialization_error(exc):
+            _raise_domain_initialization_error(exc, plugin)
         raise
 
     candidates: list[Any] = []
@@ -133,9 +227,10 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
 
     pdf_password = core._generate_pdf_password()
     option = create_option_by_file(str(option_path))
-    cookies = core._cookie_dict_from_setting(plugin.jmcomic_cookies)
-    if cookies:
-        option.update_cookies(cookies)
+    if not _apply_auth_cookies(option, plugin, core):
+        _login_from_config(plugin, core)
+        if not _apply_auth_cookies(option, plugin, core):
+            raise RuntimeError("禁漫自动登录没有返回有效 token")
 
     try:
         jm_download_album(
@@ -150,14 +245,34 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
             check_exception=True,
         )
     except Exception as exc:
-        error_text = str(exc)
-        if "/setting" in error_text or "请求重试全部失败" in error_text:
-            domains = ", ".join(plugin.jmcomic_domains)
-            proxy_hint = "；如果运行环境需要代理，请配置 jmcomic.proxy，例如 http://127.0.0.1:7890"
-            raise RuntimeError(
-                f"禁漫域名初始化失败，已尝试这些域名：{domains}{proxy_hint}"
-            ) from exc
-        raise
+        if _looks_like_authentication_error(exc) and _has_configured_credentials(plugin):
+            try:
+                _login_from_config(plugin, core)
+                retry_option = create_option_by_file(str(option_path))
+                if not _apply_auth_cookies(retry_option, plugin, core):
+                    raise RuntimeError("禁漫自动登录没有返回有效 token")
+                jm_download_album(
+                    numeric_id,
+                    retry_option,
+                    extra=Feature.export_pdf(
+                        pdf_dir=str(pdf_output_dir),
+                        filename_rule="Aid",
+                        encrypt={"password": pdf_password},
+                        delete_original_file=False,
+                    ),
+                    check_exception=True,
+                )
+                option = retry_option
+            except Exception as relogin_exc:
+                if _is_domain_initialization_error(relogin_exc):
+                    _raise_domain_initialization_error(relogin_exc, plugin)
+                raise RuntimeError(
+                    "禁漫登录状态已失效，自动登录失败，请检查 jmcomic.username 和 jmcomic.password"
+                ) from relogin_exc
+        elif _is_domain_initialization_error(exc):
+            _raise_domain_initialization_error(exc, plugin)
+        else:
+            raise
 
     pdf_created_by = "jmcomic_export"
     generated_pdfs = sorted(

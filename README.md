@@ -38,6 +38,8 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 
 `/bklogin` 仅 AstrBot 管理员可调用，普通成员调用不会响应。插件只缓存哔咔返回的 token，不保存密码。
 
+首次下载需要在插件配置中填写禁漫账号和密码；插件会自动登录并缓存 cookies/token，token 过期后会自动重新登录。
+
 拿到任一来源的 ID 后，统一使用 `/对的` 下载整本并生成加密 PDF：
 
 ```text
@@ -95,6 +97,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 - `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，返回搜索链接和第一页第一条结果的标题、ID、条目链接，不下载。
 - `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回搜索链接、条目链接、ID、标题、作者、分类、标签和页数等摘要，不下载。
 - `/bklogin <用户名> <密码>` 会调用哔咔 `POST /auth/sign-in` 获取 token，仅管理员可调用；token 缓存在插件数据目录的 `accounts/pica_token.json`。
+- `jmcomic.username` 和 `jmcomic.password` 会调用 JMComic 的 HTML 客户端自动登录；登录返回的 cookies/token 缓存在插件数据目录的 `accounts/jmcomic_token.json`，下载时自动携带。
 - `/对的 <id>` 是统一下载入口：`jm` 加数字匹配禁漫，24 位十六进制字符串优先匹配哔咔，其他纯数字匹配 nhentai；下载前先复用完整缓存，最终始终校验为加密 PDF。`/对的`、`/JJ`、`/bkdl` 没有 ID 时返回 `？`。
 - `/JJ <jm id>` 和 `/bkdl <哔咔漫画ID>` 是兼容别名，分别转发到 `/对的` 的同一套下载流程。
 - nhentai 通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表；哔咔图片地址可能访问 `img.picacomic.com`、`storage-b.picacomic.com`、`storage1.picacomic.com`。
@@ -124,6 +127,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 插件会调用 `jmcomic` 下载整本，并使用内置 PDF 导出能力生成加密 PDF。最终发送的文件名固定为输入 id，例如 `jm112233.pdf`；密码会随消息一起返回。id 仅接受 `jm+数字` 的形式。
 如果运行环境的 jmcomic PDF 导出没有产物，插件会用已下载图片兜底合成加密 PDF。
+下载前需要配置 `jmcomic.username` 和 `jmcomic.password`；登录 cookies/token 过期后插件会自动重新登录。也可以继续通过 `jmcomic.cookies` 提供手工 cookies。
 
 相关配置：
 
@@ -134,6 +138,8 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 | `jmcomic.domain` | 兼容旧配置；单个域名或逗号分隔的多个域名 | 空 |
 | `jmcomic.proxy` | 禁漫下载代理，例如 `http://127.0.0.1:7890` | 空 |
 | `jmcomic.cookies` | 禁漫 Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
+| `jmcomic.username` | 禁漫登录账号；没有有效 cookies/token 时自动登录 | 空 |
+| `jmcomic.password` | 禁漫登录密码；请勿提交含真实密码的配置文件 | 空 |
 
 如果提示 `/setting` 或“请求重试全部失败”，通常是当前环境访问配置的禁漫域名失败。优先换 `jmcomic.domains`，或给 AstrBot 运行环境配置可访问的 `jmcomic.proxy`。
 

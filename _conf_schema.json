@@ -116,6 +116,18 @@
         "type": "string",
         "hint": "可填 Netscape cookies.txt 内容、cookies.txt 文件路径，或 k=v; k2=v2 形式。不要在公开日志中输出。",
         "default": ""
+      },
+      "username": {
+        "description": "禁漫账号",
+        "type": "string",
+        "hint": "配置后插件会在没有有效 token 时自动登录。",
+        "default": ""
+      },
+      "password": {
+        "description": "禁漫密码",
+        "type": "string",
+        "hint": "用于自动登录禁漫；请勿把配置文件提交到公开仓库。",
+        "default": ""
       }
     }
   },
