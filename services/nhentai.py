@@ -12,6 +12,45 @@ from pathlib import Path
 from typing import Any
 
 
+def _backfill_cached_title(plugin: Any, gallery_id: str, cached_download: Any, core: Any) -> Any:
+    """Repair legacy cache metadata that predates title persistence."""
+    fallback = f"nhentai {gallery_id}"
+    if cached_download.title != fallback or not plugin._has_nhentai_api_key():
+        return cached_download
+
+    try:
+        api_key = plugin._require_nhentai_api_key()
+        headers = {
+            "User-Agent": core.DEFAULT_USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": f"https://nhentai.net/g/{gallery_id}/",
+        }
+        cookie_header = core._cookie_header_from_setting(plugin.nhentai_cookies)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        core._add_nhentai_auth_header(headers, api_key)
+        metadata = core._load_json_url(
+            core.NHENTAI_API_URL.format(gallery_id=gallery_id),
+            headers,
+            timeout=max(10.0, plugin.timeout_ms / 1000),
+            proxy=plugin.nhentai_proxy,
+        )
+        title = core._extract_nhentai_title(metadata, fallback)
+        if title == fallback:
+            return cached_download
+
+        cached_metadata = core._read_gallery_metadata(cached_download.metadata_path)
+        cached_metadata["title"] = title
+        cached_download.metadata_path.write_text(
+            json.dumps(cached_metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        cached_download.title = title
+    except Exception as exc:
+        core.logger.debug("回填 nhentai 缓存标题失败（%s）：%s", gallery_id, exc)
+    return cached_download
+
+
 def search_galleries(plugin: Any, query: str, limit: int, core: Any) -> list[Any]:
     search_query = query.strip()
     if not search_query:
@@ -71,6 +110,7 @@ def search_galleries(plugin: Any, query: str, limit: int, core: Any) -> list[Any
 def download_gallery(plugin: Any, gallery_id: str, core: Any) -> Any:
     cached_download = core._load_cached_gallery_download(gallery_id)
     if cached_download is not None:
+        cached_download = _backfill_cached_title(plugin, gallery_id, cached_download, core)
         core.logger.info("复用 nhentai 缓存：%s", gallery_id)
         return cached_download
 
@@ -127,12 +167,8 @@ def download_gallery(plugin: Any, gallery_id: str, core: Any) -> Any:
     if plugin.block_risky_tags and tag_slugs.intersection(core.BLOCKED_NHENTAI_TAGS):
         raise RuntimeError("命中受限标签，已停止自动下载")
 
+    title = core._extract_nhentai_title(metadata, f"nhentai {gallery_id}")
     title_info = metadata.get("title") if isinstance(metadata.get("title"), dict) else {}
-    title = (
-        str(title_info.get("english") or "").strip()
-        or str(title_info.get("pretty") or "").strip()
-        or f"nhentai {gallery_id}"
-    )
     media_id = str(metadata.get("media_id") or "")
     image_headers = {
         "User-Agent": core.DEFAULT_USER_AGENT,
@@ -189,7 +225,8 @@ def download_gallery(plugin: Any, gallery_id: str, core: Any) -> Any:
             {
                 "id": metadata.get("id"),
                 "media_id": media_id,
-                "title": title_info,
+                "title": title,
+                "title_info": title_info,
                 "num_pages": metadata.get("num_pages"),
                 "downloaded": downloaded,
                 "failures": failures,

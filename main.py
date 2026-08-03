@@ -25,7 +25,7 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Image, Plain
+from astrbot.api.message_components import File, Image, Node, Nodes, Plain
 from astrbot.api.star import Context, Star, StarTools, register
 
 
@@ -1301,7 +1301,24 @@ def _format_pica_candidates(
     return "\n".join(lines)
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.4")
+def _search_result(event: AstrMessageEvent, text: str):
+    """Return search output as one merged-forward chat record."""
+    return event.chain_result(
+        [
+            Nodes(
+                [
+                    Node(
+                        content=[Plain(text)],
+                        name="搜索结果",
+                        uin="0",
+                    )
+                ]
+            )
+        ]
+    )
+
+
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.5")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1512,9 +1529,9 @@ class XxComicGetPlugin(Star):
                 _format_result(result, index + 1)
                 for index, result in enumerate(matched[: self.max_results])
             )
-            yield event.plain_result(f"找到了这些可能来源：\n\n{body}")
+            yield _search_result(event, f"找到了这些可能来源：\n\n{body}")
             return
-        yield event.plain_result(_format_nhentai_candidate(first_nhentai))
+        yield _search_result(event, _format_nhentai_candidate(first_nhentai))
 
     @filter.command("嘻嘻")
     async def search_nhentai_text(self, event: AstrMessageEvent):
@@ -1551,7 +1568,8 @@ class XxComicGetPlugin(Star):
         for source, result in zip(("nhentai", "禁漫天堂", "哔咔"), resolved, strict=True):
             if isinstance(result, Exception) and not isinstance(result, EmptySearchResultError):
                 logger.warning("%s 文本搜索失败：%s", source, result)
-        yield event.plain_result(
+        yield _search_result(
+            event,
             _format_combined_text_search(
                 query,
                 *resolved,
@@ -1578,7 +1596,8 @@ class XxComicGetPlugin(Star):
             yield event.plain_result(f"搜索失败：{exc}")
             return
 
-        yield event.plain_result(
+        yield _search_result(
+            event,
             _format_jmcomic_candidate(
                 candidate,
                 query=query,
@@ -1624,7 +1643,7 @@ class XxComicGetPlugin(Star):
             yield event.plain_result(f"搜索失败：{exc}")
             return
 
-        yield event.plain_result(_format_pica_candidates(candidates, query=query))
+        yield _search_result(event, _format_pica_candidates(candidates, query=query))
 
     @filter.command("对的", alias={"JJ", "bkdl"})
     async def download_by_id(

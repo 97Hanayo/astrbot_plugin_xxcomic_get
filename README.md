@@ -91,11 +91,11 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 ## 下载与发送
 
-- `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果。
-- `/嘻嘻` 会同时搜索 nhentai、禁漫天堂和哔咔，每个来源最多返回前 5 条结果的搜索链接、条目链接、ID 和标题。
+- `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果；成功搜索结果会以合并转发的聊天记录返回。
+- `/嘻嘻` 会同时搜索 nhentai、禁漫天堂和哔咔，每个来源最多返回前 5 条结果的搜索链接、条目链接、ID 和标题，并以合并转发的聊天记录返回完整内容。
 - nhentai 搜索会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`；未配置 API Key 时只会在 nhentai 分组提示 `未配置api`，其他来源仍会继续搜索。
-- `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，返回搜索链接和第一页第一条结果的标题、ID、条目链接，不下载。
-- `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回搜索链接、条目链接、ID、标题、作者、分类、标签和页数等摘要，不下载。
+- `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，返回搜索链接和第一页第一条结果的标题、ID、条目链接，不下载；结果以合并转发的聊天记录返回。
+- `/bk <文本>` 会调用哔咔 `POST /comics/advanced-search?page=1` 搜索漫画，返回搜索链接、条目链接、ID、标题、作者、分类、标签和页数等摘要，不下载；结果以合并转发的聊天记录返回。
 - `/bklogin <用户名> <密码>` 会调用哔咔 `POST /auth/sign-in` 获取 token，仅管理员可调用；token 缓存在插件数据目录的 `accounts/pica_token.json`。
 - `jmcomic.username` 和 `jmcomic.password` 会调用 JMComic 的 HTML 客户端自动登录；登录返回的 cookies/token 缓存在插件数据目录的 `accounts/jmcomic_token.json`，下载时自动携带。
 - `/对的 <id>` 是统一下载入口：`jm` 加数字匹配禁漫，24 位十六进制字符串优先匹配哔咔，其他纯数字匹配 nhentai；下载前先复用完整缓存，最终始终校验为加密 PDF。三种来源的下载回复统一包含 ID、标题、页数、PDF 状态和密码。`/对的`、`/JJ`、`/bkdl` 没有 ID 时返回 `？`。
