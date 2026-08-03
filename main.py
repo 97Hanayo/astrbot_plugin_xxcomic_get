@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import importlib.util
 import json
 import re
 import secrets
@@ -27,12 +28,31 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import File, Image, Plain
 from astrbot.api.star import Context, Star, StarTools, register
 
-from services import jmcomic as jmcomic_service
-from services import nhentai as nhentai_service
-from services import pica as pica_service
-
 
 PLUGIN_NAME = "astrbot_plugin_xxcomic_get"
+
+
+def _load_service_module(module_name: str) -> Any:
+    service_path = Path(__file__).resolve().parent / "services" / f"{module_name}.py"
+    module_key = f"_{PLUGIN_NAME}_service_{module_name}"
+    spec = importlib.util.spec_from_file_location(module_key, service_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载插件服务模块：{service_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_key] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_key, None)
+        raise
+    return module
+
+
+jmcomic_service = _load_service_module("jmcomic")
+nhentai_service = _load_service_module("nhentai")
+pica_service = _load_service_module("pica")
+
+
 SOUTUBOT_HOME_URL = "https://soutubot.moe/"
 NHENTAI_API_URL = "https://nhentai.net/api/v2/galleries/{gallery_id}"
 NHENTAI_SEARCH_URL = "https://nhentai.net/api/v2/search"
