@@ -51,6 +51,31 @@ def _backfill_cached_title(plugin: Any, gallery_id: str, cached_download: Any, c
     return cached_download
 
 
+def _fetch_gallery_title(plugin: Any, gallery_id: str, fallback: str, core: Any) -> str:
+    """Fill missing search titles from the detail endpoint when necessary."""
+    try:
+        api_key = plugin._require_nhentai_api_key()
+        headers = {
+            "User-Agent": core.DEFAULT_USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": f"https://nhentai.net/g/{gallery_id}/",
+        }
+        cookie_header = core._cookie_header_from_setting(plugin.nhentai_cookies)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        core._add_nhentai_auth_header(headers, api_key)
+        metadata = core._load_json_url(
+            core.NHENTAI_API_URL.format(gallery_id=gallery_id),
+            headers,
+            timeout=max(10.0, plugin.timeout_ms / 1000),
+            proxy=plugin.nhentai_proxy,
+        )
+        return core._extract_nhentai_title(metadata, fallback)
+    except Exception as exc:
+        core.logger.debug("补取 nhentai 标题失败（%s）：%s", gallery_id, exc)
+        return fallback
+
+
 def search_galleries(plugin: Any, query: str, limit: int, core: Any) -> list[Any]:
     search_query = query.strip()
     if not search_query:
@@ -94,10 +119,14 @@ def search_galleries(plugin: Any, query: str, limit: int, core: Any) -> list[Any
         gallery_id = str(item.get("id") or item.get("gallery_id") or "").strip()
         if not gallery_id:
             continue
+        fallback_title = f"nhentai {gallery_id}"
+        title = core._extract_nhentai_title(item, "")
+        if not title:
+            title = _fetch_gallery_title(plugin, gallery_id, fallback_title, core)
         candidates.append(
             core.NhentaiCandidate(
                 gallery_id=gallery_id,
-                title=core._extract_nhentai_title(item, f"nhentai {gallery_id}"),
+                title=title or fallback_title,
             )
         )
         if len(candidates) >= max_results:

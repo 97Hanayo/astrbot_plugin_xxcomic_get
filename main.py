@@ -495,16 +495,41 @@ def _collect_image_files(base_dir: Path) -> list[Path]:
 
 
 def _extract_nhentai_title(payload: dict[str, Any], fallback: str) -> str:
-    title_info = payload.get("title")
-    if isinstance(title_info, dict):
-        for key in ("english", "pretty", "japanese"):
-            title = str(title_info.get(key) or "").strip()
+    """Extract a display title from either search or gallery API payloads."""
+    if not isinstance(payload, dict):
+        return fallback
+
+    title_keys = ("english", "pretty", "japanese", "chinese", "korean")
+    for key in ("title", "name"):
+        title_info = payload.get(key)
+        if isinstance(title_info, dict):
+            for title_key in title_keys:
+                title = title_info.get(title_key)
+                if isinstance(title, str) and title.strip():
+                    return title.strip()
+        elif isinstance(title_info, str) and title_info.strip():
+            return title_info.strip()
+
+    for key in (
+        "title_english",
+        "title_pretty",
+        "title_japanese",
+        "title_chinese",
+        "title_korean",
+        "english",
+        "pretty",
+        "japanese",
+    ):
+        title = payload.get(key)
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+
+    for key in ("data", "gallery", "attributes"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            title = _extract_nhentai_title(nested, "")
             if title:
                 return title
-    for key in ("title", "name"):
-        title = str(payload.get(key) or "").strip()
-        if title:
-            return title
     return fallback
 
 
@@ -1284,7 +1309,7 @@ def _search_result(event: AstrMessageEvent, text: str):
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.6")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.7")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
