@@ -90,6 +90,12 @@ class NhentaiCandidate:
     title: str
 
 
+@dataclass(slots=True)
+class JmComicCandidate:
+    comic_id: str
+    title: str
+
+
 class EmptySearchResultError(RuntimeError):
     pass
 
@@ -649,6 +655,14 @@ def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     )
 
 
+def _format_jmcomic_candidate(candidate: JmComicCandidate) -> str:
+    return (
+        "找到第一个禁漫结果：\n"
+        f"标题: {candidate.title}\n"
+        f"ID: {candidate.comic_id}"
+    )
+
+
 @register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic", "1.1.2")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
@@ -853,6 +867,27 @@ class XxComicGetPlugin(Star):
 
         yield event.plain_result(_format_nhentai_candidate(candidate))
 
+    @filter.command("JJS")
+    async def search_jmcomic_text(self, event: AstrMessageEvent):
+        """按文本搜索禁漫并返回第一个结果，不下载"""
+        self._start_cache_cleanup_task()
+        query = _extract_command_text(getattr(event, "message_str", ""), "JJS")
+        if not query:
+            yield event.plain_result("请发送：/JJS <搜索文本>")
+            return
+
+        try:
+            candidate = await self._search_jmcomic_first_album(query)
+        except EmptySearchResultError:
+            yield event.plain_result("空的。")
+            return
+        except Exception as exc:
+            logger.exception("jmcomic 文本搜索失败")
+            yield event.plain_result(f"搜索失败：{exc}")
+            return
+
+        yield event.plain_result(_format_jmcomic_candidate(candidate))
+
     @filter.command("对的")
     async def confirm_download_nhentai(self, event: AstrMessageEvent):
         """按给定 nhentai ID 下载原图并生成 PDF"""
@@ -1056,6 +1091,9 @@ class XxComicGetPlugin(Star):
     async def _search_nhentai_first_gallery(self, query: str) -> NhentaiCandidate:
         return await asyncio.to_thread(self._search_nhentai_first_gallery_sync, query)
 
+    async def _search_jmcomic_first_album(self, query: str) -> JmComicCandidate:
+        return await asyncio.to_thread(self._search_jmcomic_first_album_sync_locked, query)
+
     def _search_nhentai_first_gallery_sync(self, query: str) -> NhentaiCandidate:
         search_query = query.strip()
         if not search_query:
@@ -1094,6 +1132,65 @@ class XxComicGetPlugin(Star):
             raise RuntimeError("第一个搜索结果没有 gallery id")
         title = _extract_nhentai_title(first, f"nhentai {gallery_id}")
         return NhentaiCandidate(gallery_id=gallery_id, title=title)
+
+    def _search_jmcomic_first_album_sync_locked(self, query: str) -> JmComicCandidate:
+        with self._cache_lock:
+            return self._search_jmcomic_first_album_sync(query)
+
+    def _search_jmcomic_first_album_sync(self, query: str) -> JmComicCandidate:
+        search_query = query.strip()
+        if not search_query:
+            raise RuntimeError("搜索文本为空")
+
+        try:
+            from jmcomic import create_option_by_file
+        except Exception as exc:
+            raise RuntimeError("当前环境缺少 jmcomic，请安装插件依赖后重试") from exc
+
+        option_path = _get_data_dir() / "jmcomic_search_option.yml"
+        option_lines = [
+            "client:",
+            "  impl: html",
+            "  domain:",
+            "    html:",
+            *[f"      - {domain}" for domain in self.jmcomic_domains],
+        ]
+        if self.jmcomic_proxy:
+            option_lines.extend(
+                [
+                    "  postman:",
+                    "    meta_data:",
+                    f"      proxies: {self.jmcomic_proxy}",
+                ]
+            )
+        option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
+
+        option = create_option_by_file(str(option_path))
+        cookies = _cookie_dict_from_setting(self.jmcomic_cookies)
+        if cookies:
+            option.update_cookies(cookies)
+
+        try:
+            page = option.new_jm_client().search_site(search_query=search_query, page=1)
+        except Exception as exc:
+            error_text = str(exc)
+            if "/setting" in error_text or "请求重试全部失败" in error_text:
+                domains = ", ".join(self.jmcomic_domains)
+                proxy_hint = "；如果运行环境需要代理，请配置 jmcomic.proxy，例如 http://127.0.0.1:7890"
+                raise RuntimeError(
+                    f"禁漫域名初始化失败，已尝试这些域名：{domains}{proxy_hint}"
+                ) from exc
+            raise
+
+        for album_id, title in page:
+            comic_id = str(album_id).strip()
+            if not comic_id:
+                continue
+            return JmComicCandidate(
+                comic_id=f"jm{comic_id}" if comic_id.isdigit() else comic_id,
+                title=str(title or f"jm{comic_id}").strip(),
+            )
+        raise EmptySearchResultError(f"没有搜索到结果：{search_query}")
 
     def _download_nhentai_gallery_sync_locked(self, gallery_id: str) -> GalleryDownload:
         with self._cache_lock:

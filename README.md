@@ -18,6 +18,12 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 /嘻嘻 [Cuchuflin] Bug Bite: Chapter 8
 ```
 
+也可以只搜索禁漫天堂，并返回第一个搜索结果的标题和 ID，不下载：
+
+```text
+/JJS MANA 无修正
+```
+
 确认需要下载时，再发送：
 
 ```text
@@ -62,6 +68,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 - `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果。
 - `/嘻嘻` 会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`，返回第一个搜索结果的 ID、标题和链接。
+- `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，只返回第一页第一条结果的标题和 ID，不下载。
 - `/对的 <id>` 会通过 `https://nhentai.net/api/v2/galleries/{id}` 获取页列表，下载原图后合成为加密 PDF 发送。
 - 下载图片保存在插件数据目录的 `downloads/{gallery_id}/originals/` 下。
 - PDF 保存在插件数据目录的 `downloads/{gallery_id}/{gallery_id}.pdf`，文件名使用 nhentai ID。
@@ -72,7 +79,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 ## 说明
 
-- 命令入口：`/哈哈`、`/嘻嘻`、`/对的 <id>`
+- 命令入口：`/哈哈`、`/嘻嘻`、`/JJS <文本>`、`/对的 <id>`
 - 只处理同一条消息中的第一张图片
 - 搜索服务：SoutuBot
 - 下载来源：nhentai API v2
@@ -99,3 +106,21 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 | `jmcomic.cookies` | 禁漫 Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
 
 如果提示 `/setting` 或“请求重试全部失败”，通常是当前环境访问配置的禁漫域名失败。优先换 `jmcomic.domains`，或给 AstrBot 运行环境配置可访问的 `jmcomic.proxy`。
+
+## 禁漫天堂搜索
+
+发送：
+
+```text
+/JJS MANA 无修正
+```
+
+插件会调用 `jmcomic` 的 `search_site(search_query=..., page=1)` 搜索禁漫天堂站内结果，只返回第一条结果：
+
+```text
+找到第一个禁漫结果：
+标题: ...
+ID: jm112233
+```
+
+这个命令不会下载图片，也不会生成 PDF。
