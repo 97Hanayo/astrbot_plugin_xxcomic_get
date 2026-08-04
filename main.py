@@ -1309,7 +1309,7 @@ def _search_result(event: AstrMessageEvent, text: str):
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.7")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.8")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1366,6 +1366,18 @@ class XxComicGetPlugin(Star):
         self.jmcomic_download_enabled = _coerce_bool(
             _get_config_value(self.config, "jmcomic.download_enabled", True),
             True,
+        )
+        self.jmcomic_image_threads = _coerce_int(
+            _get_config_value(self.config, "jmcomic.download.threading.image", 10),
+            default=10,
+            min_value=1,
+            max_value=50,
+        )
+        self.jmcomic_photo_threads = _coerce_int(
+            _get_config_value(self.config, "jmcomic.download.threading.photo", 4),
+            default=4,
+            min_value=1,
+            max_value=32,
         )
         configured_domains = _split_config_list(
             _get_config_value(

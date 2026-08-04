@@ -93,6 +93,30 @@
         "type": "bool",
         "default": true
       },
+      "download": {
+        "description": "JMComic 下载并发控制",
+        "type": "object",
+        "items": {
+          "threading": {
+            "description": "JMComic 下载线程数",
+            "type": "object",
+            "items": {
+              "image": {
+                "description": "同时下载的图片数（1-50）",
+                "type": "int",
+                "hint": "数值越小，对禁漫请求压力越小；网页端单次最多请求 50 张图。",
+                "default": 10
+              },
+              "photo": {
+                "description": "同时下载的章节数（1-32）",
+                "type": "int",
+                "hint": "数值越小，对禁漫请求压力越小。",
+                "default": 4
+              }
+            }
+          }
+        }
+      },
       "domain": {
         "description": "禁漫域名",
         "type": "string",

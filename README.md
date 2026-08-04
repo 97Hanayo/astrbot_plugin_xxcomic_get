@@ -134,12 +134,24 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
 | `jmcomic.download_enabled` | 是否允许通过 `/对的 <jm id>` 下载禁漫本子 | `true` |
+| `jmcomic.download.threading.image` | 同时下载的图片数，范围 1-50；数值越小对禁漫压力越小 | `10` |
+| `jmcomic.download.threading.photo` | 同时下载的章节数，范围 1-32；数值越小对禁漫压力越小 | `4` |
 | `jmcomic.domains` | jmcomic 使用的禁漫域名列表，逗号或空格分隔，会按顺序重试 | `18comic.vip,18comic.org,jmcomic1.me,jmcomic.me,18comic-palworld.vip,18comic-c.art,18comic-palworld.club` |
 | `jmcomic.domain` | 兼容旧配置；单个域名或逗号分隔的多个域名 | 空 |
 | `jmcomic.proxy` | 禁漫下载代理，例如 `http://127.0.0.1:7890` | 空 |
 | `jmcomic.cookies` | 禁漫 Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
 | `jmcomic.username` | 禁漫登录账号；没有有效 cookies/token 时自动登录 | 空 |
 | `jmcomic.password` | 禁漫登录密码；请勿提交含真实密码的配置文件 | 空 |
+
+例如要进一步降低请求压力，可配置：
+
+```yaml
+jmcomic:
+  download:
+    threading:
+      image: 5
+      photo: 2
+```
 
 如果提示 `/setting` 或“请求重试全部失败”，通常是当前环境访问配置的禁漫域名失败。优先换 `jmcomic.domains`，或给 AstrBot 运行环境配置可访问的 `jmcomic.proxy`。
 

@@ -232,8 +232,8 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
             "  image:",
             "    decode: true",
             "  threading:",
-            "    image: 10",
-            "    photo: 4",
+            f"    image: {plugin.jmcomic_image_threads}",
+            f"    photo: {plugin.jmcomic_photo_threads}",
         ]
     )
     option_path.write_text("\n".join(option_lines) + "\n", encoding="utf-8")
