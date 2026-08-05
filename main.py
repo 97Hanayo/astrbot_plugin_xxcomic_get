@@ -1137,10 +1137,6 @@ def _format_result(result: SearchResult, order: int) -> str:
         lines.append(f"语言：{result.language}")
     if result.page is not None:
         lines.append(f"页码：{result.page}")
-    if result.subject_urls:
-        lines.append(f"详情：{result.subject_urls[0]}")
-    if result.page_urls:
-        lines.append(f"图片页：{result.page_urls[0]}")
     return "\n".join(lines)
 
 
@@ -1175,8 +1171,7 @@ def _format_nhentai_candidate(candidate: NhentaiCandidate) -> str:
     return (
         "找到第一个 nhentai 结果：\n"
         f"ID: {candidate.gallery_id}\n"
-        f"标题: {candidate.title}\n"
-        f"链接: {_build_nhentai_gallery_url(candidate.gallery_id)}"
+        f"标题: {candidate.title}"
     )
 
 
@@ -1189,7 +1184,6 @@ def _format_jmcomic_candidate(
         [
             f"标题: {candidate.title}",
             f"ID: {candidate.comic_id}",
-            f"链接：{_build_jmcomic_album_url(candidate.comic_id, domain)}",
         ]
     )
     return "\n".join(lines)
@@ -1203,20 +1197,17 @@ def _format_text_search_candidate(
     if isinstance(candidate, NhentaiCandidate):
         return (
             f"ID: {candidate.gallery_id}\n"
-            f"标题: {candidate.title}\n"
-            f"链接：{_build_nhentai_gallery_url(candidate.gallery_id)}"
+            f"标题: {candidate.title}"
         )
     if isinstance(candidate, JmComicCandidate):
         return (
             f"ID: {candidate.comic_id}\n"
-            f"标题: {candidate.title}\n"
-            f"链接：{_build_jmcomic_album_url(candidate.comic_id, jmcomic_domain)}"
+            f"标题: {candidate.title}"
         )
     if isinstance(candidate, PicaComicCandidate):
         return (
             f"ID: {candidate.comic_id}\n"
-            f"标题: {candidate.title}\n"
-            f"链接：{_build_pica_comic_url(candidate.comic_id)}"
+            f"标题: {candidate.title}"
         )
     raise TypeError(f"未知的搜索结果类型：{source}")
 
@@ -1276,7 +1267,6 @@ def _format_pica_candidates(
     for index, candidate in enumerate(candidates, 1):
         lines.append(f"{index}. {candidate.title}")
         lines.append(f"ID: {candidate.comic_id}")
-        lines.append(f"链接：{_build_pica_comic_url(candidate.comic_id)}")
         if candidate.author:
             lines.append(f"作者: {candidate.author}")
         if candidate.categories:
@@ -1367,7 +1357,7 @@ def _is_haha_command(event: AstrMessageEvent) -> bool:
     return bool(re.match(r"^/?哈哈(?:\s|$)", message_str))
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.10")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.11")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
