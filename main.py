@@ -54,6 +54,11 @@ pica_service = _load_service_module("pica")
 
 
 SOUTUBOT_HOME_URL = "https://soutubot.moe/"
+SOUTUBOT_SOURCE_HOSTS = {
+    "nhentai": "nhentai.net",
+    "ehentai": "e-hentai.org",
+    "panda": "panda.chaika.moe",
+}
 NHENTAI_API_URL = "https://nhentai.net/api/v2/galleries/{gallery_id}"
 NHENTAI_SEARCH_URL = "https://nhentai.net/api/v2/search"
 NHENTAI_CDN_URL = "https://nhentai.net/api/v2/cdn"
@@ -1362,7 +1367,7 @@ def _is_haha_command(event: AstrMessageEvent) -> bool:
     return bool(re.match(r"^/?哈哈(?:\s|$)", message_str))
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.9")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.10")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1815,50 +1820,31 @@ class XxComicGetPlugin(Star):
                     state="attached",
                     timeout=self.timeout_ms,
                 )
-                await page.locator('input[type="file"]').set_input_files(str(image_path))
-                await page.wait_for_selector(
-                    ".card-2, div.text-center > h3",
-                    state="attached",
+                # The site also uses .card-2 for ads, so wait for the upload API
+                # response instead of guessing from the rendered result page.
+                async with page.expect_response(
+                    lambda response: (
+                        urllib.parse.urlsplit(response.url).path.rstrip("/") == "/api/search"
+                        and response.request.method == "POST"
+                    ),
                     timeout=self.timeout_ms,
-                )
+                ) as response_info:
+                    await page.locator('input[type="file"]').set_input_files(str(image_path))
+
+                search_response = await response_info.value
+                if not search_response.ok:
+                    if search_response.status == 401:
+                        raise RuntimeError("SoutuBot 会话已失效，请刷新浏览器状态后重试")
+                    raise RuntimeError(
+                        f"SoutuBot 搜索接口返回 HTTP {search_response.status}"
+                    )
+                try:
+                    payload = await search_response.json()
+                except Exception as exc:
+                    raise RuntimeError("SoutuBot 搜索接口没有返回有效 JSON") from exc
+
+                raw_results = self._soutubot_payload_to_raw(payload)
                 await context.storage_state(path=str(state_file))
-                raw_results = await page.eval_on_selector_all(
-                    ".card-2",
-                    """
-                    (cards, maxNeeded) => {
-                        const langMap = { cn: "中文", jp: "日文", gb: "英文", kr: "韩文" };
-                        return cards.slice(0, maxNeeded).map((card) => {
-                            const spans = Array.from(card.querySelectorAll("span"));
-                            const percentSpan = spans.find((el) => /\\d+(\\.\\d+)?%/.test(el.textContent || ""));
-                            const similarityText = percentSpan?.textContent?.trim().replace("%", "") || "0";
-                            const title = card.querySelector(".font-semibold span")?.innerText || "";
-                            const preview = card.querySelector('a[target="_blank"] img')?.src || "";
-                            const sourceImg = card.querySelector('img[src*="/images/icons/"]');
-                            const source = sourceImg ? sourceImg.src.split("/").pop()?.replace(".png", "") : "";
-                            const langFlag = card.querySelector('span.fi[class*="fi-"]');
-                            const langCode = langFlag
-                                ? Array.from(langFlag.classList).find((item) => item.startsWith("fi-"))?.replace("fi-", "")
-                                : "";
-                            const buttons = Array.from(card.querySelectorAll("a.el-button"));
-                            const detail = buttons[0]?.href || "";
-                            const image = buttons[1]?.href || "";
-                            const pageText = buttons[1]?.innerText || "";
-                            const pageMatch = pageText.match(/P(\\d+)/);
-                            return {
-                                similarity: Number.parseFloat(similarityText) || 0,
-                                title,
-                                source,
-                                language: langCode ? (langMap[langCode] || langCode) : "",
-                                page: pageMatch ? Number.parseInt(pageMatch[1], 10) : null,
-                                subjectUrls: detail ? [detail] : [],
-                                pageUrls: image ? [image] : [],
-                                previewUrl: preview,
-                            };
-                        });
-                    }
-                    """,
-                    self.max_results,
-                )
             finally:
                 await context.close()
                 await browser.close()
@@ -1884,6 +1870,58 @@ class XxComicGetPlugin(Star):
             key=lambda result: result.similarity,
             reverse=True,
         )
+
+    @staticmethod
+    def _soutubot_url(source: str, path: Any) -> str:
+        value = str(path or "").strip()
+        if not value:
+            return ""
+        if value.startswith(("http://", "https://")):
+            return value
+        host = SOUTUBOT_SOURCE_HOSTS.get(source)
+        if not host:
+            return ""
+        return f"https://{host}/{value.lstrip('/')}"
+
+    def _soutubot_payload_to_raw(self, payload: Any) -> list[dict[str, Any]]:
+        if not isinstance(payload, dict):
+            raise RuntimeError("SoutuBot 搜索接口返回格式不正确")
+
+        raw_results = payload.get("data")
+        if not isinstance(raw_results, list):
+            return []
+
+        parsed: list[dict[str, Any]] = []
+        for item in raw_results[: self.max_results]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                similarity = float(item.get("similarity", 0) or 0)
+            except (TypeError, ValueError):
+                similarity = 0.0
+            source = str(item.get("source") or "").strip()
+            page = item.get("page")
+            parsed.append(
+                {
+                    "similarity": similarity,
+                    "title": str(item.get("title") or "未知标题").strip(),
+                    "source": source,
+                    "language": str(item.get("language") or "").strip(),
+                    "page": page if isinstance(page, int) and not isinstance(page, bool) else None,
+                    "subjectUrls": [
+                        subject_url
+                    ]
+                    if (subject_url := self._soutubot_url(source, item.get("subjectPath")))
+                    else [],
+                    "pageUrls": [
+                        page_url
+                    ]
+                    if (page_url := self._soutubot_url(source, item.get("pagePath")))
+                    else [],
+                    "previewUrl": str(item.get("previewImageUrl") or "").strip(),
+                }
+            )
+        return parsed
 
     async def _is_cloudflare_page(self, page: Any) -> bool:
         title = await page.title()
