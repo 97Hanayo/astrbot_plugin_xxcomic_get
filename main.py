@@ -25,7 +25,7 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Image, Node, Nodes, Plain
+from astrbot.api.message_components import At, File, Image, Node, Nodes, Plain, Reply
 from astrbot.api.star import Context, Star, StarTools, register
 
 
@@ -1309,7 +1309,60 @@ def _search_result(event: AstrMessageEvent, text: str):
     )
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.8")
+def _find_first_image_in_chain(
+    chain: list[Any] | None,
+    *,
+    depth: int = 0,
+) -> Image | None:
+    """Find the first image, including images nested in a quoted message."""
+    if not isinstance(chain, list) or depth > 4:
+        return None
+
+    for component in chain:
+        if isinstance(component, Image):
+            return component
+        if isinstance(component, Reply):
+            for attr in ("chain", "message", "origin", "content"):
+                image = _find_first_image_in_chain(
+                    getattr(component, attr, None),
+                    depth=depth + 1,
+                )
+                if image is not None:
+                    return image
+        elif isinstance(component, Node):
+            image = _find_first_image_in_chain(
+                component.content,
+                depth=depth + 1,
+            )
+            if image is not None:
+                return image
+        elif isinstance(component, Nodes):
+            for node in component.nodes:
+                image = _find_first_image_in_chain(
+                    node.content,
+                    depth=depth + 1,
+                )
+                if image is not None:
+                    return image
+    return None
+
+
+def _mentions_bot(event: AstrMessageEvent) -> bool:
+    self_id = str(event.get_self_id() or "").strip()
+    if not self_id:
+        return False
+    return any(
+        isinstance(component, At) and str(component.qq).strip() == self_id
+        for component in event.get_messages()
+    )
+
+
+def _is_haha_command(event: AstrMessageEvent) -> bool:
+    message_str = str(getattr(event, "message_str", "") or "").strip()
+    return bool(re.match(r"^/?哈哈(?:\s|$)", message_str))
+
+
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.9")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1491,14 +1544,32 @@ class XxComicGetPlugin(Star):
     async def search_comic(self, event: AstrMessageEvent):
         """识别随命令发送的图片来源"""
         self._start_cache_cleanup_task()
-        image = next(
-            (component for component in event.get_messages() if isinstance(component, Image)),
-            None,
-        )
+        image = _find_first_image_in_chain(event.get_messages())
         if image is None:
             yield event.plain_result("？")
             return
 
+        async for result in self._search_image(event, image):
+            yield result
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def search_replied_image(self, event: AstrMessageEvent):
+        """艾特机器人并回复图片时，无需指令直接识图。"""
+        if _is_haha_command(event) or not _mentions_bot(event):
+            return
+        if not any(isinstance(component, Reply) for component in event.get_messages()):
+            return
+
+        image = _find_first_image_in_chain(event.get_messages())
+        if image is None:
+            return
+
+        self._start_cache_cleanup_task()
+        async for result in self._search_image(event, image):
+            yield result
+
+    async def _search_image(self, event: AstrMessageEvent, image: Image):
+        """Run the shared image-search flow for command and reply triggers."""
         try:
             image_path = await image.convert_to_file_path()
             results = await self._search_soutubot(Path(image_path))

@@ -12,6 +12,8 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 
 插件会用 Playwright 打开 `https://soutubot.moe/`，通过页面上传图片并解析搜索结果。若搜索结果里有 `nhentai`，会先返回第一个 `nhentai` 结果的 ID、标题和链接。
 
+也可以直接回复一条图片并艾特机器人，插件会自动触发同样的搜图流程，不需要发送 `/哈哈`。
+
 也可以直接按文本聚合搜索 nhentai、禁漫天堂和哔咔；每个来源最多返回前 5 条结果，并保留条目链接、ID 和标题：
 
 ```text
@@ -91,7 +93,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 ## 下载与发送
 
-- `/哈哈` 会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果；成功搜索结果会以合并转发的聊天记录返回。
+- `/哈哈` 或回复图片并艾特机器人，会返回搜索结果中第一个 `nhentai` 结果的 ID、标题和链接，其他来源只返回搜索结果；成功搜索结果会以合并转发的聊天记录返回。
 - `/嘻嘻` 会同时搜索 nhentai、禁漫天堂和哔咔，每个来源最多返回前 5 条结果的条目链接、ID 和标题，并以合并转发的聊天记录返回完整内容。
 - nhentai 搜索会携带 API Key 调用 `https://nhentai.net/api/v2/search?query=...&sort=date&page=1`；未配置 API Key 时只会在 nhentai 分组提示 `未配置api`，其他来源仍会继续搜索。
 - `/JJS <文本>` 会调用 `jmcomic` 的站内搜索，返回第一页第一条结果的标题、ID、条目链接，不下载；结果以合并转发的聊天记录返回。
