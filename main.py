@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import importlib.util
 import json
+import random
 import re
 import secrets
 import shutil
@@ -163,6 +164,7 @@ class ImageDownloadSpec:
     path: Path
     url: str
     metadata: dict[str, Any]
+    fallback_urls: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -756,12 +758,26 @@ def _request_bytes(
     proxy: str | None = None,
     service_label: str = "nhentai",
     proxy_setting: str = "nhentai.proxy",
-) -> tuple[bytes, str]:
+) -> tuple[bytes, str, int | None]:
     request = urllib.request.Request(url, headers=headers)
     try:
         with _build_url_opener(proxy).open(request, timeout=timeout) as response:
             content_type = response.headers.get("content-type", "")
-            return response.read(), content_type
+            content_length: int | None = None
+            raw_content_length = response.headers.get("content-length")
+            if raw_content_length:
+                try:
+                    parsed_content_length = int(raw_content_length)
+                except (TypeError, ValueError):
+                    parsed_content_length = -1
+                if parsed_content_length >= 0:
+                    content_length = parsed_content_length
+            body = response.read()
+            if content_length is not None and len(body) != content_length:
+                raise RuntimeError(
+                    f"响应内容不完整：期望 {content_length} 字节，实际 {len(body)} 字节"
+                )
+            return body, content_type, content_length
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"{service_label} HTTP {exc.code}: {exc.reason}") from exc
     except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
@@ -785,6 +801,7 @@ def _download_image_specs(
 ) -> tuple[list[Path], list[dict[str, Any]], list[dict[str, Any]]]:
     def download_one(
         spec: ImageDownloadSpec,
+        retry_count: int = retries,
     ) -> tuple[Path | None, dict[str, Any] | None, dict[str, Any] | None]:
         if spec.path.exists() and spec.path.stat().st_size > 0:
             record = dict(spec.metadata)
@@ -800,10 +817,12 @@ def _download_image_specs(
 
         last_error: str | None = None
         partial_path = spec.path.with_name(f".{spec.path.name}.part")
-        for attempt in range(retries + 1):
+        candidate_urls = tuple(dict.fromkeys((spec.url, *spec.fallback_urls)))
+        for attempt in range(retry_count + 1):
+            request_url = candidate_urls[attempt % len(candidate_urls)]
             try:
-                body, content_type = _request_bytes(
-                    spec.url,
+                body, content_type, _ = _request_bytes(
+                    request_url,
                     headers,
                     timeout=timeout,
                     proxy=proxy,
@@ -825,20 +844,21 @@ def _download_image_specs(
                     {
                         "file": spec.path.name,
                         "bytes": len(body),
-                        "url": spec.url,
+                        "url": request_url,
                         "cached": False,
                     }
                 )
                 last_error = None
                 return spec.path, record, None
             except (OSError, urllib.error.URLError, RuntimeError) as exc:
-                last_error = str(exc)
+                last_error = f"{request_url}: {exc}"
                 try:
                     partial_path.unlink(missing_ok=True)
                 except OSError:
                     pass
-                if attempt < retries:
-                    time.sleep(0.8 * (attempt + 1))
+                if attempt < retry_count:
+                    delay = min(10.0, 0.8 * (2**attempt)) + random.uniform(0.0, 0.4)
+                    time.sleep(delay)
         if last_error:
             return None, None, {**spec.metadata, "url": spec.url, "error": last_error}
         return None, None, None
@@ -849,6 +869,17 @@ def _download_image_specs(
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             results = list(executor.map(download_one, specs))
+
+        # A busy CDN can fail a few requests only while many images are being
+        # fetched. Give those pages one more low-concurrency pass before
+        # reporting an incomplete gallery.
+        failed_indexes = [
+            index for index, result in enumerate(results) if result[2] is not None
+        ]
+        for index in failed_indexes:
+            retry_result = download_one(specs[index])
+            if retry_result[0] is not None:
+                results[index] = retry_result
 
     image_paths: list[Path] = []
     downloaded: list[dict[str, Any]] = []
@@ -1139,7 +1170,7 @@ def _load_json_url(
     timeout: float,
     proxy: str | None = None,
 ) -> dict[str, Any]:
-    body, content_type = _request_bytes(url, headers, timeout, proxy=proxy)
+    body, content_type, _ = _request_bytes(url, headers, timeout, proxy=proxy)
     if "json" not in content_type:
         raise RuntimeError(f"接口没有返回 JSON：{content_type}")
     return json.loads(body.decode("utf-8"))
@@ -1373,7 +1404,7 @@ def _is_haha_command(event: AstrMessageEvent) -> bool:
     return bool(re.match(r"^/?哈哈(?:\s|$)", message_str))
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.12")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.13")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)

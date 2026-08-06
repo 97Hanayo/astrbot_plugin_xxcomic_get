@@ -1,6 +1,6 @@
 name: astrbot_plugin_xxcomic_get
 display_name: 本子图片识别
 desc: 通过 /哈哈 + 图片识别来源，也支持回复图片并艾特机器人免指令识图；或 /嘻嘻 + 文本聚合搜索 nhentai/JMComic/哔咔；/对的 统一按 ID 类型下载并生成加密 PDF，兼容 /JJ、/bkdl
-version: v1.3.12
+version: v1.3.13
 author: hanayo
 repo: ""

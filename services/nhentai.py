@@ -175,8 +175,13 @@ def download_gallery(plugin: Any, gallery_id: str, core: Any) -> Any:
     image_servers = cdn_config.get("image_servers")
     if not isinstance(image_servers, list) or not image_servers:
         raise RuntimeError("nhentai API 没有返回可用图片 CDN")
-    image_base_url = str(image_servers[0] or "").strip()
-    if not image_base_url:
+    image_base_urls = []
+    for image_server in image_servers:
+        image_base_url = str(image_server or "").strip().rstrip("/")
+        parsed_server = urllib.parse.urlparse(image_base_url)
+        if image_base_url and parsed_server.scheme in {"http", "https"}:
+            image_base_urls.append(image_base_url)
+    if not image_base_urls:
         raise RuntimeError("nhentai API 返回的图片 CDN 为空")
 
     pages = metadata.get("pages")
@@ -214,11 +219,16 @@ def download_gallery(plugin: Any, gallery_id: str, core: Any) -> Any:
             continue
         suffix = Path(urllib.parse.urlparse(page_path).path).suffix or ".webp"
         file_path = images_dir / f"{index:04d}{suffix}"
-        image_url = core._join_url(image_base_url, page_path)
+        image_url = core._join_url(image_base_urls[0], page_path)
+        fallback_urls = tuple(
+            core._join_url(image_base_url, page_path)
+            for image_base_url in image_base_urls[1:]
+        )
         image_specs.append(
             core.ImageDownloadSpec(
                 path=file_path,
                 url=image_url,
+                fallback_urls=fallback_urls,
                 metadata={
                     "number": index,
                     "width": item.get("width"),
