@@ -182,11 +182,6 @@ def download_gallery(plugin: Any, gallery_id: str, core: Any) -> Any:
     pages = metadata.get("pages")
     if not isinstance(pages, list) or not pages:
         raise RuntimeError("nhentai API 没有返回可下载页列表")
-    if len(pages) > plugin.max_download_pages:
-        raise RuntimeError(
-            f"页数 {len(pages)} 超过配置上限 {plugin.max_download_pages}，已停止下载"
-        )
-
     tags = metadata.get("tags") if isinstance(metadata.get("tags"), list) else []
     tag_slugs = {
         str(tag.get("slug") or tag.get("name") or "").strip().lower()
@@ -240,6 +235,7 @@ def download_gallery(plugin: Any, gallery_id: str, core: Any) -> Any:
         retries=plugin.download_retries,
         service_label="nhentai 原图",
         proxy_setting="nhentai.proxy",
+        concurrency=plugin.jmcomic_image_threads,
     )
     failures.extend(image_failures)
 

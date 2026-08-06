@@ -66,12 +66,10 @@ AstrBot 本子/漫画图片来源识别插件，使用 SoutuBot 搜图。
 | `nhentai.cookies` | nhentai Cookie，支持 `cookies.txt` 内容/路径或 `k=v;...` | 空 |
 | `nhentai.api_key` | nhentai API Key，会作为 `Authorization: Key <api_key>` 请求头发送；为空时相关命令返回 `未配置api` | 空 |
 | `nhentai.proxy` | nhentai API 和原图下载代理，例如 `http://127.0.0.1:7890`；出现 SSL EOF 时优先检查此项 | 空 |
-| `nhentai.max_download_pages` | 最大下载页数 | `120` |
 | `nhentai.block_risky_tags` | 是否阻止风险标签自动下载 | `true` |
 | `pica.proxy` | 哔咔 API 和图片下载代理，例如 `http://127.0.0.1:7890` | 空 |
 | `pica.max_results` | `/bk` 最多返回结果数 | `5` |
 | `pica.download_enabled` | 是否允许通过 `/对的 <24位ID>` 下载哔咔漫画 | `true` |
-| `pica.max_download_pages` | 哔咔整本最大下载页数 | `300` |
 | `pica.download_retries` | 哔咔单图下载重试次数 | `2` |
 
 SoutuBot 不需要 SauceNAO API Key。
@@ -136,7 +134,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
 | `jmcomic.download_enabled` | 是否允许通过 `/对的 <jm id>` 下载禁漫本子 | `true` |
-| `jmcomic.download.threading.image` | 同时下载的图片数，范围 1-50；数值越小对禁漫压力越小 | `10` |
+| `jmcomic.download.threading.image` | 所有来源同时下载的图片数，范围 1-50；数值越小对来源站点压力越小 | `10` |
 | `jmcomic.download.threading.photo` | 同时下载的章节数，范围 1-32；数值越小对禁漫压力越小 | `4` |
 | `jmcomic.domains` | jmcomic 使用的禁漫域名列表，逗号或空格分隔，会按顺序重试 | `18comic.vip,18comic.org,jmcomic1.me,jmcomic.me,18comic-palworld.vip,18comic-c.art,18comic-palworld.club` |
 | `jmcomic.domain` | 兼容旧配置；单个域名或逗号分隔的多个域名 | 空 |
@@ -258,5 +256,4 @@ storage1.picacomic.com
 | `pica.proxy` | 哔咔 API 和图片下载代理，例如 `http://127.0.0.1:7890` | 空 |
 | `pica.max_results` | `/bk` 最多返回结果数 | `5` |
 | `pica.download_enabled` | 是否允许通过 `/对的 <24位ID>` 下载哔咔漫画 | `true` |
-| `pica.max_download_pages` | 哔咔整本最大下载页数 | `300` |
 | `pica.download_retries` | 哔咔单图下载重试次数 | `2` |

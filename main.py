@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import importlib.util
@@ -780,13 +781,12 @@ def _download_image_specs(
     retries: int,
     service_label: str,
     proxy_setting: str,
+    concurrency: int = 1,
 ) -> tuple[list[Path], list[dict[str, Any]], list[dict[str, Any]]]:
-    image_paths: list[Path] = []
-    downloaded: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
-    for spec in specs:
+    def download_one(
+        spec: ImageDownloadSpec,
+    ) -> tuple[Path | None, dict[str, Any] | None, dict[str, Any] | None]:
         if spec.path.exists() and spec.path.stat().st_size > 0:
-            image_paths.append(spec.path)
             record = dict(spec.metadata)
             record.update(
                 {
@@ -796,8 +796,7 @@ def _download_image_specs(
                     "cached": True,
                 }
             )
-            downloaded.append(record)
-            continue
+            return spec.path, record, None
 
         last_error: str | None = None
         partial_path = spec.path.with_name(f".{spec.path.name}.part")
@@ -821,7 +820,6 @@ def _download_image_specs(
                     raise RuntimeError(f"返回内容不是图片：{content_type}")
                 partial_path.write_bytes(body)
                 partial_path.replace(spec.path)
-                image_paths.append(spec.path)
                 record = dict(spec.metadata)
                 record.update(
                     {
@@ -831,9 +829,8 @@ def _download_image_specs(
                         "cached": False,
                     }
                 )
-                downloaded.append(record)
                 last_error = None
-                break
+                return spec.path, record, None
             except (OSError, urllib.error.URLError, RuntimeError) as exc:
                 last_error = str(exc)
                 try:
@@ -843,7 +840,26 @@ def _download_image_specs(
                 if attempt < retries:
                     time.sleep(0.8 * (attempt + 1))
         if last_error:
-            failures.append({**spec.metadata, "url": spec.url, "error": last_error})
+            return None, None, {**spec.metadata, "url": spec.url, "error": last_error}
+        return None, None, None
+
+    worker_count = max(1, int(concurrency))
+    if worker_count == 1:
+        results = [download_one(spec) for spec in specs]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            results = list(executor.map(download_one, specs))
+
+    image_paths: list[Path] = []
+    downloaded: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for image_path, record, failure in results:
+        if image_path is not None:
+            image_paths.append(image_path)
+        if record is not None:
+            downloaded.append(record)
+        if failure is not None:
+            failures.append(failure)
     return image_paths, downloaded, failures
 
 
@@ -1357,7 +1373,7 @@ def _is_haha_command(event: AstrMessageEvent) -> bool:
     return bool(re.match(r"^/?哈哈(?:\s|$)", message_str))
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.11")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.12")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
@@ -1395,12 +1411,6 @@ class XxComicGetPlugin(Star):
         self.nhentai_cookies = _get_config_value(self.config, "nhentai.cookies", "")
         self.nhentai_api_key = _get_config_value(self.config, "nhentai.api_key", "")
         self.nhentai_proxy = str(_get_config_value(self.config, "nhentai.proxy", "") or "").strip()
-        self.max_download_pages = _coerce_int(
-            _get_config_value(self.config, "nhentai.max_download_pages", 120),
-            default=120,
-            min_value=1,
-            max_value=300,
-        )
         self.download_retries = _coerce_int(
             _get_config_value(self.config, "nhentai.download_retries", 2),
             default=2,
@@ -1453,12 +1463,6 @@ class XxComicGetPlugin(Star):
         self.pica_download_enabled = _coerce_bool(
             _get_config_value(self.config, "pica.download_enabled", True),
             True,
-        )
-        self.pica_max_download_pages = _coerce_int(
-            _get_config_value(self.config, "pica.max_download_pages", 300),
-            default=300,
-            min_value=1,
-            max_value=500,
         )
         self.pica_download_retries = _coerce_int(
             _get_config_value(self.config, "pica.download_retries", 2),

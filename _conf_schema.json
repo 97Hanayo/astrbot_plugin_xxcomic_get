@@ -62,13 +62,6 @@
         "hint": "可选。当前运行环境无法直连 nhentai 或出现 SSL EOF 时填写 HTTP/HTTPS 代理，例如 http://127.0.0.1:7890。",
         "default": ""
       },
-      "max_download_pages": {
-        "description": "最大下载页数",
-        "type": "int",
-        "default": 120,
-        "min": 1,
-        "max": 300
-      },
       "download_retries": {
         "description": "单页下载重试次数",
         "type": "int",
@@ -102,9 +95,9 @@
             "type": "object",
             "items": {
               "image": {
-                "description": "同时下载的图片数（1-50）",
+                "description": "图片下载并发数（所有来源，1-50）",
                 "type": "int",
-                "hint": "数值越小，对禁漫请求压力越小；网页端单次最多请求 50 张图。",
+                "hint": "禁漫、nhentai 和哔咔统一使用此并发数；数值越小，对来源站点请求压力越小。",
                 "default": 10
               },
               "photo": {
@@ -177,14 +170,6 @@
         "description": "允许 /对的 或 /bkdl 下载哔咔漫画",
         "type": "bool",
         "default": true
-      },
-      "max_download_pages": {
-        "description": "哔咔最大下载页数",
-        "type": "int",
-        "hint": "整本分话合计页数超过此上限时停止下载。",
-        "default": 300,
-        "min": 1,
-        "max": 500
       },
       "download_retries": {
         "description": "哔咔单图下载重试次数",

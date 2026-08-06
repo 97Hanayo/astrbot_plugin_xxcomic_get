@@ -232,10 +232,6 @@ def download_comic(plugin: Any, comic_id: str, core: Any) -> Any:
             if not isinstance(media, dict):
                 failures.append({"episode": order, "page": page_index, "error": "missing media"})
                 continue
-            if len(image_specs) >= plugin.pica_max_download_pages:
-                raise RuntimeError(
-                    f"页数超过配置上限 {plugin.pica_max_download_pages}，已停止下载"
-                )
             try:
                 image_url = core._stringify_pica_image_url(media)
             except Exception as exc:
@@ -263,6 +259,7 @@ def download_comic(plugin: Any, comic_id: str, core: Any) -> Any:
         retries=plugin.pica_download_retries,
         service_label="哔咔图片",
         proxy_setting="pica.proxy",
+        concurrency=plugin.jmcomic_image_threads,
     )
     failures.extend(image_failures)
 
