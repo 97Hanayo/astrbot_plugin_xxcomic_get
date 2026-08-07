@@ -125,8 +125,7 @@ data/plugin_data/astrbot_plugin_xxcomic_get/cookies/soutubot_storage_state.json
 
 兼容旧命令：`/JJ jm112233`
 
-插件会调用 `jmcomic` 下载整本，并使用内置 PDF 导出能力生成加密 PDF。回复会包含禁漫专辑标题和页数；最终发送的文件名固定为输入 id，例如 `jm112233.pdf`；密码会随消息一起返回。id 仅接受 `jm+数字` 的形式。
-如果运行环境的 jmcomic PDF 导出没有产物，插件会用已下载图片兜底合成加密 PDF。
+插件会调用 `jmcomic` 下载整本原图，再复用插件对其他来源使用的通用图片分页、合并和加密流程生成 PDF。回复会包含禁漫专辑标题和页数；最终发送的文件名固定为输入 id，例如 `jm112233.pdf`；密码会随消息一起返回。id 仅接受 `jm+数字` 的形式。
 下载前需要配置 `jmcomic.username` 和 `jmcomic.password`；登录 cookies/token 过期后插件会自动重新登录。也可以继续通过 `jmcomic.cookies` 提供手工 cookies。
 
 相关配置：

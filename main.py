@@ -1110,18 +1110,23 @@ def _load_cached_gallery_download(gallery_id: str) -> GalleryDownload | None:
 
 def _load_cached_jmcomic_download(comic_id: str) -> JmComicDownload | None:
     download_dir = _get_download_dir(comic_id)
+    image_paths = _collect_image_files(download_dir / "jmcomic")
     pdf_path = download_dir / f"{comic_id}.pdf"
     metadata_path = download_dir / "metadata.json"
     cached_metadata = _read_gallery_metadata(metadata_path)
     cached_pdf_password = str(cached_metadata.get("pdf_password") or "").strip()
-    if not _is_usable_cached_pdf(pdf_path, cached_pdf_password):
+    if (
+        cached_metadata.get("pdf_created_by") not in {"plugin_images", "plugin_fallback"}
+        or not _is_usable_cached_pdf(pdf_path, cached_pdf_password)
+        or not image_paths
+    ):
         return None
     try:
         cached_page_count = int(cached_metadata.get("page_count") or 0)
     except (TypeError, ValueError):
         cached_page_count = 0
-    if cached_page_count <= 0:
-        cached_page_count = len(_collect_image_files(download_dir / "jmcomic"))
+    if cached_page_count <= 0 or cached_page_count != len(image_paths):
+        return None
     return JmComicDownload(
         comic_id=comic_id,
         title=_metadata_title(cached_metadata, f"禁漫 {comic_id}"),
@@ -1404,7 +1409,7 @@ def _is_haha_command(event: AstrMessageEvent) -> bool:
     return bool(re.match(r"^/?哈哈(?:\s|$)", message_str))
 
 
-@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.13")
+@register(PLUGIN_NAME, "hanayo", "用 SoutuBot 识别图片来源，或用文本搜索 nhentai/JMComic/哔咔", "1.3.14")
 class XxComicGetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)

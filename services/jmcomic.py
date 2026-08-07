@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -192,20 +191,17 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
         return cached_download
 
     try:
-        from jmcomic import Feature, create_option_by_file, download_album as jm_download_album
+        from jmcomic import create_option_by_file, download_album as jm_download_album
     except Exception as exc:
         raise RuntimeError("当前环境缺少 jmcomic，请安装插件依赖后重试") from exc
 
     numeric_id = core._jmcomic_numeric_id(comic_id)
     download_dir = core._get_download_dir(comic_id)
     jm_work_dir = download_dir / "jmcomic"
-    pdf_output_dir = download_dir / "pdf"
     metadata_path = download_dir / "metadata.json"
     pdf_path = download_dir / f"{comic_id}.pdf"
     core._clear_directory_contents(jm_work_dir)
-    core._clear_directory_contents(pdf_output_dir)
     jm_work_dir.mkdir(parents=True, exist_ok=True)
-    pdf_output_dir.mkdir(parents=True, exist_ok=True)
 
     option_path = download_dir / "jmcomic_option.yml"
     option_lines = [
@@ -251,12 +247,6 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
         jm_download_album(
             numeric_id,
             option,
-            extra=Feature.export_pdf(
-                pdf_dir=str(pdf_output_dir),
-                filename_rule="Aid",
-                encrypt={"password": pdf_password},
-                delete_original_file=False,
-            ),
             check_exception=True,
         )
     except Exception as exc:
@@ -269,12 +259,6 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
                 jm_download_album(
                     numeric_id,
                     retry_option,
-                    extra=Feature.export_pdf(
-                        pdf_dir=str(pdf_output_dir),
-                        filename_rule="Aid",
-                        encrypt={"password": pdf_password},
-                        delete_original_file=False,
-                    ),
                     check_exception=True,
                 )
                 option = retry_option
@@ -289,34 +273,13 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
         else:
             raise
 
-    pdf_created_by = "jmcomic_export"
-    generated_pdfs = sorted(
-        (path for path in pdf_output_dir.glob("*.pdf") if path.is_file()),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if not generated_pdfs:
-        generated_pdfs = sorted(
-            (path for path in download_dir.rglob("*.pdf") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
     image_paths = core._collect_image_files(jm_work_dir)
     page_count = len(image_paths)
-    if not generated_pdfs:
-        if not image_paths:
-            raise RuntimeError("jmcomic 下载完成后没有找到导出的 PDF，也没有找到可用于合成 PDF 的图片")
-        core._create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
-        generated_pdf_name = pdf_path.name
-        pdf_created_by = "plugin_fallback"
-    else:
-        generated_pdf = generated_pdfs[0]
-        generated_pdf_name = generated_pdf.name
-        if pdf_path.exists():
-            pdf_path.unlink()
-        shutil.move(str(generated_pdf), str(pdf_path))
+    if not image_paths:
+        raise RuntimeError("jmcomic 下载完成后没有找到可用于合成 PDF 的原图")
+    core._create_encrypted_pdf_from_images(image_paths, pdf_path, pdf_password)
     if not pdf_path.exists() or pdf_path.stat().st_size <= 0:
-        raise RuntimeError("jmcomic PDF 重命名后文件不可用")
+        raise RuntimeError("jmcomic 原图合成 PDF 后文件不可用")
     core._ensure_pdf_encrypted(pdf_path, pdf_password)
 
     metadata_path.write_text(
@@ -328,8 +291,7 @@ def download_album(plugin: Any, comic_id: str, core: Any) -> Any:
                 "page_count": page_count,
                 "pdf": pdf_path.name,
                 "pdf_password": pdf_password,
-                "source_pdf": generated_pdf_name,
-                "pdf_created_by": pdf_created_by,
+                "pdf_created_by": "plugin_images",
             },
             ensure_ascii=False,
             indent=2,
